@@ -70,7 +70,7 @@ def main(cfg):
     max_success_overall = DUMMY_FAILURE
     max_success_reward_correlation_overall = DUMMY_FAILURE
     max_reward_code_path = None 
-    
+
     # Eureka generation loop
     for iter in range(cfg.iteration):
         # Get Eureka response
@@ -116,7 +116,7 @@ def main(cfg):
 
         # Logging Token Information
         logging.info(f"Iteration {iter}: Prompt Tokens: {prompt_tokens}, Completion Tokens: {total_completion_token}, Total Tokens: {total_token}")
-        
+
         code_runs = [] 
         rl_runs = []
         for response_id in range(cfg.sample):
@@ -143,7 +143,7 @@ def main(cfg):
             for i, line in enumerate(lines):
                 if line.strip().startswith("def "):
                     code_string = "\n".join(lines[i:])
-                    
+
             # Add the Eureka Reward Signature to the environment code
             try:
                 gpt_reward_signature, input_lst = get_function_signature(code_string)
@@ -185,7 +185,7 @@ def main(cfg):
 
             # Find the freest GPU to run GPU-accelerated RL
             set_freest_gpu()
-            
+
             # Execute the python file with flags
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             with open(rl_filepath, 'w') as f:
@@ -198,14 +198,14 @@ def main(cfg):
                                             stdout=f, stderr=f)
             block_until_training(rl_filepath, log_status=True, iter_num=iter, response_id=response_id)
             rl_runs.append(process)
-        
+            
         # Gather RL training results and construct reward reflection
         code_feedbacks = []
         contents = []
         successes = []
         reward_correlations = []
         code_paths = []
-        
+
         exec_success = False 
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
             rl_run.communicate()
@@ -236,9 +236,9 @@ def main(cfg):
                 tensorboard_logs = load_tensorboard_logs(tensorboard_logdir)
                 max_iterations = np.array(tensorboard_logs['gt_reward']).shape[0]
                 epoch_freq = max(int(max_iterations // 10), 1)
-                
+
                 content += policy_feedback.format(epoch_freq=epoch_freq)
-                
+
                 # Compute Correlation between Human-Engineered and GPT Rewards
                 if "gt_reward" in tensorboard_logs and "gpt_reward" in tensorboard_logs:
                     gt_reward = np.array(tensorboard_logs["gt_reward"])
@@ -275,7 +275,7 @@ def main(cfg):
 
             content += code_output_tip
             contents.append(content) 
-        
+
         # Repeat the iteration if all code generation failed
         if not exec_success and cfg.sample != 1:
             execute_rates.append(0.)
@@ -288,7 +288,7 @@ def main(cfg):
         # Select the best code sample based on the success rate
         best_sample_idx = np.argmax(np.array(successes))
         best_content = contents[best_sample_idx]
-            
+
         max_success = successes[best_sample_idx]
         max_success_reward_correlation = reward_correlations[best_sample_idx]
         execute_rate = np.sum(np.array(successes) >= 0.) / cfg.sample
@@ -308,7 +308,7 @@ def main(cfg):
         logging.info(f"Iteration {iter}: Best Generation ID: {best_sample_idx}")
         logging.info(f"Iteration {iter}: GPT Output Content:\n" +  responses[best_sample_idx]["message"]["content"] + "\n")
         logging.info(f"Iteration {iter}: User Content:\n" + best_content + "\n")
-            
+
         # Plot the success rate
         fig, axs = plt.subplots(2, figsize=(6, 6))
         fig.suptitle(f'{cfg.env.task}')
@@ -338,7 +338,7 @@ def main(cfg):
         # Save dictionary as JSON file
         with open('messages.json', 'w') as file:
             json.dump(messages, file, indent=4)
-    
+
     # Evaluate the best reward code many times
     if max_reward_code_path is None: 
         logging.info("All iterations of code generation failed, aborting...")
@@ -347,11 +347,11 @@ def main(cfg):
     logging.info(f"Task: {task}, Max Training Success {max_success_overall}, Correlation {max_success_reward_correlation_overall}, Best Reward Code Path: {max_reward_code_path}")
     logging.info(f"Evaluating best reward code {cfg.num_eval} times")
     shutil.copy(max_reward_code_path, output_file)
-    
+
     eval_runs = []
     for i in range(cfg.num_eval):
         set_freest_gpu()
-        
+
         # Execute the python file with flags
         rl_filepath = f"reward_code_eval{i}.txt"
         with open(rl_filepath, 'w') as f:
