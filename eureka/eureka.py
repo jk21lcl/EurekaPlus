@@ -4,7 +4,7 @@ import json
 import logging 
 import matplotlib.pyplot as plt
 import os
-import openai
+from openai import OpenAI
 import re
 import subprocess
 from pathlib import Path
@@ -25,7 +25,10 @@ def main(cfg):
     logging.info(f"Workspace: {workspace_dir}")
     logging.info(f"Project Root: {EUREKA_ROOT_DIR}")
 
-    openai.api_key = os.getenv("OPENAI_API_KEY")
+    client = OpenAI(
+        api_key=cfg.api_key,
+        base_url=cfg.base_url
+    )
 
     task = cfg.env.task
     task_description = cfg.env.description
@@ -88,7 +91,7 @@ def main(cfg):
                 break
             for attempt in range(1000):
                 try:
-                    response_cur = openai.ChatCompletion.create(
+                    response_cur = client.chat.completions.create(
                         model=model,
                         messages=messages,
                         temperature=cfg.temperature,
@@ -106,13 +109,13 @@ def main(cfg):
                 logging.info("Code terminated due to too many failed attempts!")
                 exit()
 
-            responses.extend(response_cur["choices"])
-            prompt_tokens = response_cur["usage"]["prompt_tokens"]
-            total_completion_token += response_cur["usage"]["completion_tokens"]
-            total_token += response_cur["usage"]["total_tokens"]
+            responses.extend(response_cur.choices)
+            prompt_tokens = response_cur.usage.prompt_tokens
+            total_completion_token += response_cur.usage.completion_tokens
+            total_token += response_cur.usage.total_tokens
 
         if cfg.sample == 1:
-            logging.info(f"Iteration {iter}: GPT Output:\n " + responses[0]["message"]["content"] + "\n")
+            logging.info(f"Iteration {iter}: GPT Output:\n " + responses[0].message.content + "\n")
 
         # Logging Token Information
         logging.info(f"Iteration {iter}: Prompt Tokens: {prompt_tokens}, Completion Tokens: {total_completion_token}, Total Tokens: {total_token}")
@@ -120,7 +123,7 @@ def main(cfg):
         code_runs = [] 
         rl_runs = []
         for response_id in range(cfg.sample):
-            response_cur = responses[response_id]["message"]["content"]
+            response_cur = responses[response_id].message.content
             logging.info(f"Iteration {iter}: Processing Code Run {response_id}")
 
             # Regex patterns to extract python code enclosed in GPT response

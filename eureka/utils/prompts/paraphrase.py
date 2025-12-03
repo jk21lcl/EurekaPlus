@@ -1,24 +1,35 @@
-
+import os
 import sys
 import argparse
+import yaml
 from pathlib import Path
-import openai
+from openai import OpenAI
+
+with open(f"../../cfg/config.yaml", "r") as f:
+    config = yaml.safe_load(f)
 
 def paraphrase(string, num=1):
     messages = [
         {"role": "system", "content": "Please paraphrase the following instructions while preserving their meaning. Any words surrounded by {} should also appear in your result with a similar context."},
         {"role": "user", "content": string}
     ]
-    responses = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo-16k-0613",
+    client = OpenAI(
+        api_key=config["api_key"],
+        base_url=config["base_url"]
+    )
+    responses = client.chat.completions.create(
+        model=config["model"],
         messages=messages,
         temperature=0.7,
-        n=num,
+        n=num
     )
-    return [choice["message"]["content"] for choice in responses["choices"]]
+    return [choice.message.content for choice in responses.choices]
 
 if __name__ == "__main__":
     """
+    Paraphrase the prompt in a given file for multiple times.
+    Then save the paraphrases to new files named as <original_filename>-0.<ext>, etc.
+
     Example usage:
     python paraphrase.py initial_system.txt -n 3
     """
