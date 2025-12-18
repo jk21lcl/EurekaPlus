@@ -1,4 +1,5 @@
-import re 
+import re
+from typing import List, Tuple
 
 def file_to_string(filename):
     with open(filename, 'r') as file:
@@ -83,16 +84,17 @@ def extract_observation_functions(filename, task='ant'):
 
 import ast
 
-def get_function_signature(code_string):
+def get_function_signature(code_string: str) -> Tuple[str, List[str]]:
     # Parse the code string into an AST
+    # TODO: Improve the parsing robustness
     module = ast.parse(code_string)
 
     # Find the function definitions
     function_defs = [node for node in module.body if isinstance(node, ast.FunctionDef)]
 
-    # If there are no function definitions, return None
+    # If there are no function definitions, raise an error
     if not function_defs:
-        return None
+        raise ValueError("No function definitions found in the provided code string.")
 
     # For simplicity, we'll just return the signature of the first function definition
     function_def = function_defs[0]
