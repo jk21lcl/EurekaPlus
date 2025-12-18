@@ -86,7 +86,6 @@ import ast
 
 def get_function_signature(code_string: str) -> Tuple[str, List[str]]:
     # Parse the code string into an AST
-    # TODO: Improve the parsing robustness
     module = ast.parse(code_string)
 
     # Find the function definitions

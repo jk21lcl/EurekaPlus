@@ -1,8 +1,5 @@
-import warnings
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
-
-import numpy as np
 
 DUMMY_FAILURE = -10000.0
 
@@ -56,23 +53,32 @@ class StatsManager:
         """
         Return the best RunStats within a specific iteration.
         """
-        if iteration not in self.iterations:
-            warnings.warn(f"Iteration {iteration} not found in stats.", RuntimeWarning)
-            return None
+        assert iteration in self.iterations, f"Iteration {iteration} not found in stats."
+        
         return self.iterations[iteration].best_run
     
     def get_execute_rate_within_iteration(self, iteration: int) -> float:
         """
         Return the execution rate within a specific iteration.
         """
-        if iteration not in self.iterations:
-            warnings.warn(f"Iteration {iteration} not found in stats.", RuntimeWarning)
-            return 0.0
+        assert iteration in self.iterations, f"Iteration {iteration} not found in stats."
+        
         iteration_stats = self.iterations[iteration]
-        if len(iteration_stats.runs) == 0:
-            warnings.warn(f"No runs found for iteration {iteration}.", RuntimeWarning)
-            return 0.0
+        assert len(iteration_stats.runs) > 0, f"No runs found for iteration {iteration}."
+        
         return iteration_stats.execute_num / len(iteration_stats.runs)
+    
+    def get_first_feedback_within_iteration(self, iteration: int) -> Optional[str]:
+        """
+        Return the feedback from the first RunStats within a specific iteration.
+        Used for providing feedback to LLM when all runs within that iteration failed.
+        """
+        assert iteration in self.iterations, f"Iteration {iteration} not found in stats."
+        
+        iteration_stats = self.iterations[iteration]
+        assert len(iteration_stats.runs) > 0, f"No runs found for iteration {iteration}."
+        
+        return iteration_stats.runs[0].feedback
     
     def get_best_run_overall(self) -> Optional[RunStats]:
         """
@@ -80,8 +86,8 @@ class StatsManager:
         """
         valid_best_runs = [iter_stats.best_run for iter_stats in self.iterations.values() if iter_stats.best_run is not None]
         if not valid_best_runs:
-            warnings.warn("No valid runs found across all iterations.", RuntimeWarning)
             return None
+        
         return max(valid_best_runs, key=lambda run: run.success)
     
     def get_best_stat_for_each_iteration(self, iteration: int) -> Tuple[List[float], List[float], List[float], List[Optional[str]]]:
@@ -92,9 +98,8 @@ class StatsManager:
         execute_rates = [self.get_execute_rate_within_iteration(iter_num) for iter_num in range(iteration + 1)]
         best_runs = []
         for iter_num in range(iteration + 1):
-            if iter_num not in self.iterations:
-                warnings.warn(f"Iteration {iter_num} not found in stats.", RuntimeWarning)
-                continue
+            assert iter_num in self.iterations, f"Iteration {iter_num} not found in stats."
+            
             iter_stats = self.iterations[iter_num]
             if iter_stats.best_run is not None:
                 best_runs.append(iter_stats.best_run)

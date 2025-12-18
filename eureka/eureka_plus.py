@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -131,10 +131,9 @@ class EurekaPlus:
         
         return responses
 
-    def post_process(self, iter: int, response_id: int, response_cur: str) -> Tuple[str, bool]:
+    def post_process(self, iter: int, response_id: int, response_cur: str) -> str:
         """
-        Post-process the generated code, integrate into environment, and save to file.
-        Returns the code string and success status.
+        Post-process the generated code string, returns the modified code string.
         """
         logging.info(f"Iteration {iter}: Processing Code Run {response_id}")
 
@@ -162,14 +161,28 @@ class EurekaPlus:
             if line.strip().startswith("def "):
                 code_string = "\n".join(lines[i:])
                 break
-
+        
+        # Add @torch.jit.script decorator if not present
+        if "@torch.jit.script" not in code_string:
+            code_string = "@torch.jit.script\n" + code_string
+        
+        with open(self.cfg.paths.generated_reward_copy.format(iter=iter, id=response_id), 'w') as file:
+            file.writelines(code_string + '\n')
+        
+        return code_string
+    
+    def integrate_code_into_env(self, iter: int, response_id: int, code_string: str) -> bool:
+        """
+        Integrate the generated reward code into the environment code and save to file.
+        Returns the success status.
+        """
         # Add the Eureka Reward Signature to the environment code
         try:
             llm_reward_signature, input_lst = get_function_signature(code_string)
         except Exception as e:
             logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse function signature! Error: {e}")
-            return code_string, False
-
+            return False
+        
         reward_signature = [
             f"self.rew_buf[:], self.rew_dict = {llm_reward_signature}",
             f"self.extras['llm_reward'] = self.rew_buf.mean()",
@@ -191,17 +204,12 @@ class EurekaPlus:
             file.writelines("import math" + '\n')
             file.writelines("import torch" + '\n')
             file.writelines("from torch import Tensor" + '\n')
-            if "@torch.jit.script" not in code_string:
-                code_string = "@torch.jit.script\n" + code_string
-            file.writelines(code_string + '\n')
-
-        with open(self.cfg.paths.generated_reward_copy.format(iter=iter, id=response_id), 'w') as file:
             file.writelines(code_string + '\n')
 
         # Copy the generated environment code to hydra output directory for bookkeeping
         shutil.copy(self.cfg.paths.generated_task_file, self.cfg.paths.generated_task_file_copy.format(iter=iter, id=response_id))
         
-        return code_string, True
+        return True
 
     def launch_rl_training(self, iter: int, response_id: int) -> subprocess.Popen:
         """ Launch RL training subprocess with the generated reward code """
@@ -233,7 +241,7 @@ class EurekaPlus:
 
         return process
 
-    def gather_result(self, iter: int, response_id: int, rl_run: subprocess.Popen) -> bool:
+    def gather_result(self, iter: int, response_id: int, rl_run: Optional[subprocess.Popen]) -> bool:
         """
         Gather RL training results and provide feedback.
         Returns success status.
@@ -245,18 +253,19 @@ class EurekaPlus:
         run_stats = RunStats(iteration=iter, response_id=response_id, code_path=code_path)
         feedback = ""
 
-        rl_run.communicate()
         rl_filepath = self.cfg.paths.reward_iter_output.format(iter=iter, id=response_id)
-        try:
-            with open(rl_filepath, 'r') as f:
-                stdout_str = f.read() 
-        except: 
+        
+        if rl_run is None or not os.path.exists(rl_filepath):
             feedback += self.prompts.execution_error_feedback.format(traceback_msg="Code Run cannot be executed due to function signature error! Please re-write an entirely new reward function!")
             feedback += self.prompts.code_output_tip
             run_stats.feedback = feedback
             self.stats_manager.add_run(run_stats)
             return False
 
+        rl_run.communicate()
+        with open(rl_filepath, 'r') as f:
+            stdout_str = f.read() 
+        
         traceback_msg = filter_traceback(stdout_str)
         if traceback_msg == '':
             # If RL execution has no error, provide policy statistics feedback
@@ -346,14 +355,17 @@ class EurekaPlus:
         plt.savefig(self.cfg.paths.summary_figure)
         np.savez(self.cfg.paths.summary_stats, execute_rates=execute_rates, best_successes=best_successes, best_reward_correlations=best_reward_correlations, best_code_paths=best_code_paths)
 
+        self.update_messages(responses[best_sample_idx].message.content, best_feedback)
+    
+    def update_messages(self, llm_response: str, feedback: str):
         # Update messages for the next iteration
         if len(self.messages) == 2:
-            self.messages += [{"role": "assistant", "content": responses[best_sample_idx].message.content}]
-            self.messages += [{"role": "user", "content": best_feedback}]
+            self.messages += [{"role": "assistant", "content": llm_response}]
+            self.messages += [{"role": "user", "content": feedback}]
         else:
             assert len(self.messages) == 4
-            self.messages[-2] = {"role": "assistant", "content": responses[best_sample_idx].message.content}
-            self.messages[-1] = {"role": "user", "content": best_feedback}
+            self.messages[-2] = {"role": "assistant", "content": llm_response}
+            self.messages[-1] = {"role": "user", "content": feedback}
 
         # Save dictionary as JSON file
         with open(self.cfg.paths.message_log, 'w') as file:
@@ -367,17 +379,19 @@ class EurekaPlus:
 
             # Post-process each generated code and launch RL training
             code_strs: List[str] = []
-            rl_runs: List[subprocess.Popen] = []
+            rl_runs: List[Optional[subprocess.Popen]] = []
             for response_id in range(self.cfg.sample):
                 response_cur = responses[response_id].message.content
                 
-                code_string, success = self.post_process(iter, response_id, response_cur)
-                if not success:
-                    continue
+                code_string = self.post_process(iter, response_id, response_cur)
                 code_strs.append(code_string)
-
-                rl_run = self.launch_rl_training(iter, response_id)
-                rl_runs.append(rl_run)
+                
+                success = self.integrate_code_into_env(iter, response_id, code_string)
+                if success:
+                    rl_run = self.launch_rl_training(iter, response_id)
+                    rl_runs.append(rl_run)
+                else:
+                    rl_runs.append(None)
                 
             # Gather RL training results and construct reward reflection
             exec_success = False 
@@ -386,9 +400,11 @@ class EurekaPlus:
                 if success:
                     exec_success = True
             
-            # Repeat the iteration if all code generation failed
-            if not exec_success and self.cfg.sample != 1:
-                logging.info("All code generation failed! Repeat this iteration from the current message checkpoint!")
+            if not exec_success:
+                logging.info(f"Iteration {iter}: All code generation failed, requesting LLM to re-generate...")
+                feedback = self.stats_manager.get_first_feedback_within_iteration(iter)
+                assert feedback is not None
+                self.update_messages(responses[0].message.content, feedback)
                 continue
 
             # Analyze results and prepare for the next iteration
