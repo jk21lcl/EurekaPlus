@@ -138,14 +138,11 @@ class EurekaPlus:
         logging.info(f"Iteration {iter}: Processing Code Run {response_id}")
 
         # Regex patterns to extract python code enclosed in LLM response
-        # TODO: improve extraction robustness
         patterns = [
             r'```python(.*?)```',
             r'python(.*?)```',
+            r'```py(.*?)```',
             r'```(.*?)```',
-            r'"""(.*?)"""',
-            r'""(.*?)""',
-            r'"(.*?)"',
         ]
         for pattern in patterns:
             code_string = re.search(pattern, response_cur, re.DOTALL)
