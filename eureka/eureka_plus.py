@@ -157,14 +157,19 @@ class EurekaPlus:
         # Remove unnecessary imports
         lines = code_string.split("\n")
         for i, line in enumerate(lines):
-            # TODO: handle multiple function definitions
             if line.strip().startswith("def "):
                 code_string = "\n".join(lines[i:])
                 break
         
-        # Add @torch.jit.script decorator if not present
-        if "@torch.jit.script" not in code_string:
-            code_string = "@torch.jit.script\n" + code_string
+        # Add @torch.jit.script decorator above each function definition if not present
+        lines = code_string.split("\n")
+        new_lines = []
+        for i, line in enumerate(lines):
+            if line.strip().startswith("def "):
+                if i == 0 or not lines[i-1].strip().startswith("@torch.jit.script"):
+                    new_lines.append("@torch.jit.script")
+            new_lines.append(line)
+        code_string = "\n".join(new_lines)
         
         with open(self.cfg.paths.generated_reward_copy.format(iter=iter, id=response_id), 'w') as file:
             file.writelines(code_string + '\n')
