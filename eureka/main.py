@@ -100,10 +100,10 @@ def evaluate_reward_code(cfg: DictConfig):
         max_success = max(tensorboard_logs['consecutive_successes'])
         reward_code_final_successes.append(max_success)
 
-        if "gt_reward" in tensorboard_logs and "gpt_reward" in tensorboard_logs:
+        if "gt_reward" in tensorboard_logs and "llm_reward" in tensorboard_logs:
             gt_reward = np.array(tensorboard_logs["gt_reward"])
-            gpt_reward = np.array(tensorboard_logs["gpt_reward"])
-            reward_correlation = np.corrcoef(gt_reward, gpt_reward)[0, 1]
+            llm_reward = np.array(tensorboard_logs["llm_reward"])
+            reward_correlation = np.corrcoef(gt_reward, llm_reward)[0, 1]
             reward_code_correlations_final.append(reward_correlation)
 
     logging.info(f"Final Success Mean: {np.mean(reward_code_final_successes)}, Std: {np.std(reward_code_final_successes)}, Raw: {reward_code_final_successes}")
