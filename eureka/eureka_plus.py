@@ -85,9 +85,13 @@ class EurekaPlus:
         with open(self.cfg.paths.generated_train_config, 'w') as new_yamlfile:
             yaml.safe_dump(data, new_yamlfile)
 
-    def generate_candidates(self, iter: int) -> List[Choice]:
-        """ Generate multiple reward code candidates from LLM """
-        responses: List[Choice] = []
+    def generate_candidates(self, iter: int) -> List[str]:
+        """
+        Generate multiple reward code candidates from LLM.
+        Return the raw LLM response strings.
+        """
+        contents: List[str] = []
+        contents_cur: List[Optional[str]] = []
         response_cur = None
         total_samples = 0
         total_token = 0
@@ -105,8 +109,14 @@ class EurekaPlus:
                         model=self.model,
                         messages=self.messages,
                         temperature=self.cfg.temperature,
-                        n=chunk_size
+                        n=chunk_size,
                     )
+                    contents_cur = [choice.message.content for choice in response_cur.choices]
+                    if len(contents_cur) != chunk_size:
+                        raise ValueError(f"Received {len(contents_cur)} samples, expected {chunk_size} samples!")
+                    for i, content in enumerate(contents_cur):
+                        if content is None:
+                            raise ValueError(f"Received empty content for sample {total_samples + i}!")
                     total_samples += chunk_size
                     break
                 except Exception as e:
@@ -119,19 +129,18 @@ class EurekaPlus:
                 logging.info("Code terminated due to too many failed attempts!")
                 exit()
 
-            responses.extend(response_cur.choices)
             prompt_tokens = response_cur.usage.prompt_tokens
             total_completion_token += response_cur.usage.completion_tokens
             total_token += response_cur.usage.total_tokens
-
-        for id in range(self.cfg.sample):
-            logging.info(f"Iteration {iter}: Generated Sample {id}:\n " + responses[id].message.content + "\n")
-
-        logging.info(f"Iteration {iter}: Prompt Tokens: {prompt_tokens}, Completion Tokens: {total_completion_token}, Total Tokens: {total_token}")
+            contents.extend(contents_cur)
         
-        return responses
+        logging.info(f"Iteration {iter}: Prompt Tokens: {prompt_tokens}, Completion Tokens: {total_completion_token}, Total Tokens: {total_token}")
+        for id in range(self.cfg.sample):
+            logging.info(f"Iteration {iter}: Generated Sample {id}:\n " + contents[id] + "\n")
 
-    def post_process(self, iter: int, response_id: int, response_cur: str) -> str:
+        return contents[:self.cfg.sample]
+
+    def post_process(self, iter: int, response_id: int, content_cur: str) -> str:
         """
         Post-process the generated code string, returns the modified code string.
         """
@@ -145,11 +154,11 @@ class EurekaPlus:
             r'```(.*?)```',
         ]
         for pattern in patterns:
-            code_string = re.search(pattern, response_cur, re.DOTALL)
+            code_string = re.search(pattern, content_cur, re.DOTALL)
             if code_string is not None:
                 code_string = code_string.group(1).strip()
                 break
-        code_string = response_cur if not code_string else code_string
+        code_string = content_cur if not code_string else code_string
 
         # Remove unnecessary imports
         lines = code_string.split("\n")
@@ -318,7 +327,7 @@ class EurekaPlus:
 
         return success
     
-    def analyze_results(self, iter: int, responses: List[Choice]):
+    def analyze_results(self, iter: int, contents: List[str]):
         """
         Analyze RL training results and prepare for the next iteration.
         """
@@ -334,7 +343,7 @@ class EurekaPlus:
 
         logging.info(f"Iteration {iter}: Execute_rate: {execute_rate*100:.2f}%, Best Success: {best_run_stats.success}, Best Reward Correlation: {best_run_stats.reward_correlation}, Best Code Path: {best_run_stats.code_path}")
         logging.info(f"Iteration {iter}: Best Generation ID: {best_sample_idx}")
-        logging.info(f"Iteration {iter}: LLM Output Content:\n" +  responses[best_sample_idx].message.content + "\n")
+        logging.info(f"Iteration {iter}: LLM Output Content:\n" +  contents[best_sample_idx] + "\n")
         logging.info(f"Iteration {iter}: User Content:\n" + best_feedback + "\n")
 
         # Plot the success rate
@@ -357,7 +366,7 @@ class EurekaPlus:
         plt.savefig(self.cfg.paths.summary_figure)
         np.savez(self.cfg.paths.summary_stats, execute_rates=execute_rates, best_successes=best_successes, best_reward_correlations=best_reward_correlations, best_code_paths=best_code_paths)
 
-        self.update_messages(responses[best_sample_idx].message.content, best_feedback)
+        self.update_messages(contents[best_sample_idx], best_feedback)
     
     def update_messages(self, llm_response: str, feedback: str):
         # Update messages for the next iteration
@@ -377,15 +386,15 @@ class EurekaPlus:
         # The main iteration loop for improving reward code
         for iter in range(self.cfg.iteration):
             # Generate multiple reward code candidates
-            responses = self.generate_candidates(iter)
+            contents = self.generate_candidates(iter)
 
             # Post-process each generated code and launch RL training
             code_strs: List[str] = []
             rl_runs: List[Optional[subprocess.Popen]] = []
             for response_id in range(self.cfg.sample):
-                response_cur = responses[response_id].message.content
+                content_cur = contents[response_id]
                 
-                code_string = self.post_process(iter, response_id, response_cur)
+                code_string = self.post_process(iter, response_id, content_cur)
                 code_strs.append(code_string)
                 
                 success = self.integrate_code_into_env(iter, response_id, code_string)
@@ -406,11 +415,11 @@ class EurekaPlus:
                 logging.info(f"Iteration {iter}: All code generation failed, requesting LLM to re-generate...")
                 feedback = self.stats_manager.get_first_feedback_within_iteration(iter)
                 assert feedback is not None
-                self.update_messages(responses[0].message.content, feedback)
+                self.update_messages(contents[0], feedback)
                 continue
 
             # Analyze results and prepare for the next iteration
-            self.analyze_results(iter, responses)
+            self.analyze_results(iter, contents)
         
         # After all iterations, report the best reward code overall
         best_run_overall = self.stats_manager.get_best_run_overall()
