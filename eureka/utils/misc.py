@@ -1,7 +1,8 @@
-import subprocess
-import os
 import json
 import logging
+import os
+import subprocess
+import time
 
 from utils.extract_task_code import file_to_string
 
@@ -40,6 +41,8 @@ def block_until_training(rl_filepath, log_status=False, iter_num=-1, response_id
             if log_status and "Traceback" in rl_log:
                 logging.info(f"Iteration {iter_num}: Code Run {response_id} execution error!")
             break
+        # Wait for a bit before checking again
+        time.sleep(1)
 
 if __name__ == "__main__":
     print(get_freest_gpu())

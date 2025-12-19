@@ -1,6 +1,7 @@
 import os
-from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 from collections import defaultdict
+
+from tensorboard.backend.event_processing.event_accumulator import EventAccumulator
 
 def find_files_with_substring(directory, substring):
     matches = []
