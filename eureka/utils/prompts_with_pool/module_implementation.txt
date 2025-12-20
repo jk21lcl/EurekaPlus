@@ -1,0 +1,2 @@
+Implement the reward module based on this specification:
+{specification}

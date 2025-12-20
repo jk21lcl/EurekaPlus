@@ -11,7 +11,7 @@ class RunStats:
     success: float = DUMMY_FAILURE              # consecutive success
     reward_correlation: float = DUMMY_FAILURE   # correlation between LLM reward and gt reward
     code_path: Optional[str] = None             # path to the generated reward code
-    feedback: Optional[str] = None              # feedback from human or LLM
+    signal: Optional[str] = None                # training signal
 
     @classmethod
     def get_dummy_failure(cls, iteration: int = -1, response_id: int = -1) -> 'RunStats':
@@ -68,17 +68,17 @@ class StatsManager:
         
         return iteration_stats.execute_num / len(iteration_stats.runs)
     
-    def get_first_feedback_within_iteration(self, iteration: int) -> Optional[str]:
+    def get_first_signal_within_iteration(self, iteration: int) -> Optional[str]:
         """
-        Return the feedback from the first RunStats within a specific iteration.
-        Used for providing feedback to LLM when all runs within that iteration failed.
+        Return the signal from the first RunStats within a specific iteration.
+        Used for providing signal to LLM when all runs within that iteration failed.
         """
         assert iteration in self.iterations, f"Iteration {iteration} not found in stats."
         
         iteration_stats = self.iterations[iteration]
         assert len(iteration_stats.runs) > 0, f"No runs found for iteration {iteration}."
         
-        return iteration_stats.runs[0].feedback
+        return iteration_stats.runs[0].signal
     
     def get_best_run_overall(self) -> Optional[RunStats]:
         """

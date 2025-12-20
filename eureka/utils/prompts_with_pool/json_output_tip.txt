@@ -1,0 +1,4 @@
+You are allowed to reason internally before producing the final answer.
+Your final output must be a single JSON object that strictly follows the schema below:
+{schema}
+Do not include your reasoning or any extra text.

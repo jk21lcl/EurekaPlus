@@ -20,7 +20,7 @@ def prepare_cfg(cfg: DictConfig):
     isaac_root = cfg.paths.isaac_root
 
     cfg.paths.train_script = f'{isaac_root}/train.py'
-    cfg.paths.prompt_dir = f'{project_root}/utils/prompts'
+    cfg.paths.prompt_dirs = [f'{project_root}/utils/prompts', f'{project_root}/utils/prompts_with_pool']
 
     # Resolve file paths
     task = cfg.env.task

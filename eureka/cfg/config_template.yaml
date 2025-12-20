@@ -19,14 +19,15 @@ suffix: GPT  # suffix for generated files (indicates LLM model)
 api_key: null  # API key for LLM
 base_url: null  # base URL for LLM API
 
-# Eureka parameters
-iteration: 1 # how many iterations of Eureka to run
-sample: 3 # number of Eureka samples to generate per iteration
-max_iterations: 3000 # RL Policy training iterations (decrease this to make the feedback loop faster)
-num_eval: 5 # number of evaluation episodes to run for the final reward
-capture_video: False # whether to capture policy rollout videos
+# EurekaPlus parameters
+enable_module_pool: False  # whether to enable module pool for function generation
+iteration: 1  # how many iterations of EurekaPlus to run
+sample: 3  # number of function candidates to generate per iteration
+max_iterations: 3000  # RL Policy training iterations (decrease this to make the feedback loop faster)
+num_eval: 5  # number of evaluation episodes to run for the final reward
+capture_video: False  # whether to capture policy rollout videos
 
 # Weights and Biases
-use_wandb: False # whether to use wandb for logging
-wandb_username: "" # wandb username if logging with wandb
-wandb_project: "" # wandb project if logging with wandb
+use_wandb: False  # whether to use wandb for logging
+wandb_username: ""  # wandb username if logging with wandb
+wandb_project: ""  # wandb project if logging with wandb
