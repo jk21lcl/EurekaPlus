@@ -48,7 +48,7 @@ def main(cfg):
     output_file = f"{ISAAC_ROOT_DIR}/tasks/{env_name}{suffix.lower()}.py"
 
     # Loading all text prompts
-    prompt_dir = f'{EUREKA_ROOT_DIR}/utils/prompts'
+    prompt_dir = f'{EUREKA_ROOT_DIR}/utils/vanilla_prompts'
     initial_system = file_to_string(f'{prompt_dir}/initial_system.txt')
     code_output_tip = file_to_string(f'{prompt_dir}/code_output_tip.txt')
     code_feedback = file_to_string(f'{prompt_dir}/code_feedback.txt')
