@@ -1,0 +1,6 @@
+Here is the modified module pool, along with the specifications of each module.
+{module_pool}
+
+You should construct the reward function as a linear combination of the modules in the modified pool.
+Please choose the most appropriate modules and decide their weights to construct the reward function for the given task.
+You can also refer to the training statistics of the previous RL training and the improvement plan to help your decision.

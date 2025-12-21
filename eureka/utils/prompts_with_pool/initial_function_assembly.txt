@@ -1,0 +1,4 @@
+Here is the created module pool, along with the specifications of each module.
+{module_pool}
+You should construct the reward function as a linear combination of the modules in the pool.
+Please choose the most appropriate modules and decide their weights to construct the reward function for the given task.

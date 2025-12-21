@@ -7,6 +7,7 @@ DUMMY_FAILURE = -10000.0
 class RunStats:
     iteration: int
     response_id: int
+    content: str                     # generated reward code content
 
     success: float = DUMMY_FAILURE              # consecutive success
     reward_correlation: float = DUMMY_FAILURE   # correlation between LLM reward and gt reward
@@ -15,7 +16,7 @@ class RunStats:
 
     @classmethod
     def get_dummy_failure(cls, iteration: int = -1, response_id: int = -1) -> 'RunStats':
-        return cls(iteration=iteration, response_id=response_id)
+        return cls(iteration=iteration, response_id=response_id, content="")
 
 class IterationStats:
     def __init__(self, iteration: int):
@@ -52,6 +53,7 @@ class StatsManager:
     def get_best_run_within_iteration(self, iteration: int) -> Optional[RunStats]:
         """
         Return the best RunStats within a specific iteration.
+        If all runs failed in that iteration, return None.
         """
         assert iteration in self.iterations, f"Iteration {iteration} not found in stats."
         
@@ -68,24 +70,25 @@ class StatsManager:
         
         return iteration_stats.execute_num / len(iteration_stats.runs)
     
-    def get_first_signal_within_iteration(self, iteration: int) -> Optional[str]:
+    def get_first_run_within_iteration(self, iteration: int) -> Optional[str]:
         """
-        Return the signal from the first RunStats within a specific iteration.
-        Used for providing signal to LLM when all runs within that iteration failed.
+        Return the first RunStats content within a specific iteration.
+        Used for feedback when no runs succeeded.
         """
         assert iteration in self.iterations, f"Iteration {iteration} not found in stats."
         
         iteration_stats = self.iterations[iteration]
         assert len(iteration_stats.runs) > 0, f"No runs found for iteration {iteration}."
         
-        return iteration_stats.runs[0].signal
+        return iteration_stats.runs[0]
     
     def get_best_run_overall(self) -> Optional[RunStats]:
         """
         Return the best RunStats across all iterations.
+        If no successful runs exist, return None.
         """
         valid_best_runs = [iter_stats.best_run for iter_stats in self.iterations.values() if iter_stats.best_run is not None]
-        if not valid_best_runs:
+        if len(valid_best_runs) == 0:
             return None
         
         return max(valid_best_runs, key=lambda run: run.success)
@@ -94,6 +97,7 @@ class StatsManager:
         """
         Return lists of execute rates, best successes, best reward correlations,
         and best code paths for each iteration up to the specified iteration.
+        If an iteration has no successful runs, use dummy failure values.
         """
         execute_rates = [self.get_execute_rate_within_iteration(iter_num) for iter_num in range(iteration + 1)]
         best_runs = []

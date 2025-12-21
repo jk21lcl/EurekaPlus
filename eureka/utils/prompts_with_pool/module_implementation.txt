@@ -1,2 +1,2 @@
-Implement the reward module based on this specification:
+Implement a reward module based on this specification:
 {specification}

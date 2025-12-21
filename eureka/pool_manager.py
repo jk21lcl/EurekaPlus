@@ -19,6 +19,25 @@ class ModuleUsage(BaseModel):
 class ModuleUsageList(BaseModel):
     usages: List[ModuleUsage] = Field(description="A list of module usages with assigned weights.")
 
+class AddModuleRequest(BaseModel):
+    spec: ModuleSpec = Field(description="The specification of the reward module function.")
+    reasoning: str = Field(description="The reasoning behind adding this module.")
+
+class DeleteModuleRequest(BaseModel):
+    name: str = Field(description="The name of the module to be deleted.")
+    reasoning: str = Field(description="The reasoning behind deleting this module.")
+
+class ModifyModuleRequest(BaseModel):
+    # Specification will remain the same; only code may change
+    name: str = Field(description="The name of the module to be modified.")
+    description: str = Field(description="The description of the modifications to be made.")
+    reasoning: str = Field(description="The reasoning behind modifying this module.")
+
+class ImprovePlan(BaseModel):
+    add_modules: List[AddModuleRequest] = Field(default_factory=list, description="List of modules to be added.")
+    delete_modules: List[DeleteModuleRequest] = Field(default_factory=list, description="List of modules to be deleted.")
+    modify_modules: List[ModifyModuleRequest] = Field(default_factory=list, description="List of modules to be modified.")
+
 @dataclass
 class Module:
     code: str
@@ -39,6 +58,14 @@ class PoolManager:
         # Skip adding if module with same name already exists
         if self.find_module_by_name(spec.name) is None:
             self.modules.append(Module(code=code, spec=spec, signature=signature))
+    
+    def delete_module(self, name: str):
+        self.modules = [m for m in self.modules if m.spec.name != name]
+    
+    def modify_module(self, name: str, new_code: str):
+        module = self.find_module_by_name(name)
+        if module is not None:
+            module.code = new_code
     
     def show(
         self,

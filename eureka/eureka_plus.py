@@ -14,11 +14,10 @@ import matplotlib.pyplot as plt
 import yaml
 from omegaconf import DictConfig
 from openai import OpenAI
-from openai.types.chat.chat_completion import Choice
 from pydantic import BaseModel, ValidationError
 
-from pool_manager import PoolManager, ModuleSpecList, ModuleUsageList
-from stats_manager import IterationStats, RunStats, StatsManager
+from pool_manager import ImprovePlan, PoolManager, ModuleSpecList, ModuleUsageList
+from stats_manager import RunStats, StatsManager
 from utils.misc import block_until_training, filter_traceback, set_freest_gpu
 from utils.file_utils import load_tensorboard_logs
 from utils.extract_task_code import file_to_string, get_function_signature
@@ -63,6 +62,7 @@ class EurekaPlus:
         )
         
         if cfg.enable_module_pool:
+            assert self.cfg.sample == 1, "Module pool currently only supports sample=1!"
             initial_system_with_pool = self.prompts.initial_system_with_pool.format(
                 task_description=self.task_description,
                 task_obs_code_string=self.task_obs_code_string,
@@ -123,6 +123,7 @@ class EurekaPlus:
                 )
                 content = response.choices[0].message.content
                 logging.info(f"LLM Response Content:\n" + content + "\n")
+                content = self.extract_json(content)
                 parsed_output = output_model.model_validate_json(content)
                 
                 # Add the valid response to messages
@@ -137,7 +138,7 @@ class EurekaPlus:
             time.sleep(1)
         raise RuntimeError("Failed to get valid JSON response from LLM after multiple attempts.")
 
-    def call_llm_for_module(self, user_prompt: str) -> Tuple[str, str]:
+    def call_llm_for_module(self, user_prompt: str, add_tip: bool = True) -> Tuple[str, str]:
         """
         Call LLM with user prompt and return the code string output after post-processing.
         Retries up to 10 times if call fails.
@@ -145,8 +146,9 @@ class EurekaPlus:
         Return the code string and its function signature.
         """
         # Add module output tip to the user prompt
-        user_prompt_with_tip = user_prompt + self.prompts.module_output_tip
-        self.messages.append({"role": "user", "content": user_prompt_with_tip})
+        if add_tip:
+            user_prompt = user_prompt + self.prompts.module_output_tip
+        self.messages.append({"role": "user", "content": user_prompt})
         for attempt in range(10):
             try:
                 response = self.client.chat.completions.create(
@@ -192,7 +194,40 @@ class EurekaPlus:
         logging.info(self.pool_manager.show(view="debug"))
 
     def improve_pool(self, iter: int):
-        pass
+        # Add the best LLM response from previous iteration to messages
+        best_run = self.stats_manager.get_best_run_within_iteration(iter - 1)
+        if best_run is None:
+            best_run = self.stats_manager.get_first_run_within_iteration(iter - 1)
+        
+        # Generate improvement plan for the pool
+        improve_plan = self.call_llm_and_parse(
+            best_run.signal + self.prompts.pool_improvement_guidance.format(
+                module_pool_details=self.pool_manager.show(view="edit"),
+            ),
+            ImprovePlan,
+        )
+        logging.info(f"Iteration {iter}: Improving pool with {len(improve_plan.add_modules)} additions, {len(improve_plan.delete_modules)} deletions, and {len(improve_plan.modify_modules)} modifications.")
+        logging.info(f"Improvement Plan: \n" + improve_plan.model_dump_json())
+        
+        for add_req in improve_plan.add_modules:
+            logging.info(f"Adding module: {add_req.spec.name}")
+            user_prompt = self.prompts.module_implementation.format(specification=add_req.spec.model_dump_json())
+            code_string, signature = self.call_llm_for_module(user_prompt)
+            self.pool_manager.add_module(code_string, add_req.spec, signature)
+        for delete_req in improve_plan.delete_modules:
+            logging.info(f"Deleting module: {delete_req.name}")
+            self.pool_manager.delete_module(delete_req.name)
+        for modify_req in improve_plan.modify_modules:
+            logging.info(f"Modifying module: {modify_req.name}")
+            module = self.pool_manager.find_module_by_name(modify_req.name)
+            user_prompt = self.prompts.module_modification.format(
+                spec=module.spec.model_dump_json(),
+                code=module.code,
+                description=modify_req.description,
+            )
+            code_string, _ = self.call_llm_for_module(user_prompt, add_tip=False)
+            self.pool_manager.modify_module(modify_req.name, code_string)
+        logging.info(f"Iteration {iter}: Improved pool: \n" + self.pool_manager.show(view="debug"))
 
     def update_pool(self, phase: Phase, iter: int):
         if phase == Phase.BOOTSTRAP:
@@ -201,17 +236,62 @@ class EurekaPlus:
             self.improve_pool(iter)
 
     def generate_candidates_from_pool(self, phase: Phase, iter: int) -> List[str]:
-        pass
+        prompt_template = ""
+        if phase == Phase.BOOTSTRAP:
+            # Remove the specification design messages
+            assert len(self.messages) == 3
+            self.messages = self.messages[:-2]
+            
+            prompt_template = self.prompts.initial_function_assembly
+        elif phase == Phase.ITERATE:
+            prompt_template = self.prompts.function_assembly_with_feedback
+        
+        module_usage_list = self.call_llm_and_parse(
+            prompt_template.format(
+                module_pool=self.pool_manager.show(view="assembly"),
+            ),
+            ModuleUsageList,
+        )
+        reward_function = self.pool_manager.construct_reward_function(module_usage_list)
+        logging.info(f"Iteration {iter}: Generated reward function from pool:\n" + reward_function + "\n")
+        
+        # Save dictionary as JSON file
+        with open(self.cfg.paths.message_log, 'w') as file:
+            json.dump(self.messages, file, indent=4)
+
+        if phase == Phase.ITERATE:
+            # Remove the messages of the previous iteration
+            assert len(self.messages) == 7
+            self.messages = self.messages[0] + self.messages[-2:]
+        
+        return [reward_function]
 
     def generate_candidates_from_scratch(self, phase: Phase, iter: int) -> List[str]:
         """
         Generate multiple reward code candidates from LLM.
         Return the raw LLM response strings.
         """
-        # Add initial user prompt for BOOTSTRAP phase
+        # Add necessary messages based on phase
         if phase == Phase.BOOTSTRAP:
+            # Add initial user prompt for BOOTSTRAP phase
             initial_user = self.prompts.initial_user.format(task_obs_code_string=self.task_obs_code_string, task_description=self.task_description)
             self.messages.append({"role": "user", "content": initial_user})
+        elif phase == Phase.ITERATE:
+            best_run = self.stats_manager.get_best_run_within_iteration(iter - 1)
+            guidance = self.prompts.success_guidance
+            if best_run is None:
+                # If all runs failed in previous iteration, use the first run's content for feedback
+                best_run = self.stats_manager.get_first_run_within_iteration(iter - 1)
+                guidance = self.prompts.failure_guidance
+            guidance += self.prompts.code_output_tip
+            
+            # Add the best LLM response and feedback to messages
+            self.messages += [{"role": "assistant", "content": best_run.content}]
+            self.messages += [{"role": "user", "content": best_run.signal + guidance}]
+
+            # Save dictionary as JSON file
+            with open(self.cfg.paths.message_log, 'w') as file:
+                json.dump(self.messages, file, indent=4)
 
         contents: List[str] = []
         contents_cur: List[Optional[str]] = []
@@ -263,6 +343,7 @@ class EurekaPlus:
 
         # Remove the last round of assistant messages and user prompt for next calls
         if phase == Phase.ITERATE:
+            assert len(self.messages) == 4
             self.messages = self.messages[:-2]
 
         return contents[:self.cfg.sample]
@@ -274,6 +355,18 @@ class EurekaPlus:
         # pool-enabled path
         self.update_pool(phase, iter)
         return self.generate_candidates_from_pool(phase, iter)
+    
+    def extract_json(self, string: str) -> str:
+        patterns = [
+            r'```json(.*?)```',
+            r'json(.*?)```',
+            r'```(.*?)```',
+        ]
+        for pattern in patterns:
+            extracted_str = re.search(pattern, string, re.DOTALL)
+            if extracted_str is not None:
+                return extracted_str.group(1).strip()
+        return string
 
     def post_process(self, content_cur: str) -> str:
         """
@@ -382,14 +475,14 @@ class EurekaPlus:
 
         return process
 
-    def gather_result(self, iter: int, response_id: int, rl_run: Optional[subprocess.Popen]) -> bool:
+    def gather_result(self, iter: int, response_id: int, code_str: str, rl_run: Optional[subprocess.Popen]) -> bool:
         """
         Gather RL training results and provide signal.
         Returns success status.
         """
         # initialize RunStats for this run
         code_path = self.cfg.paths.generated_task_file_copy.format(iter=iter, id=response_id)
-        run_stats = RunStats(iteration=iter, response_id=response_id, code_path=code_path)
+        run_stats = RunStats(iteration=iter, response_id=response_id, content=code_str, code_path=code_path)
         signal = ""
 
         rl_filepath = self.cfg.paths.reward_iter_output.format(iter=iter, id=response_id)
@@ -465,7 +558,6 @@ class EurekaPlus:
         
         best_sample_idx = best_run_stats.response_id
         best_signal = best_run_stats.signal
-        self.update_messages(contents[best_sample_idx], best_signal, True)
 
         logging.info(f"Iteration {iter}: Execute_rate: {execute_rate*100:.2f}%, Best Success: {best_run_stats.success}, Best Reward Correlation: {best_run_stats.reward_correlation}, Best Code Path: {best_run_stats.code_path}")
         logging.info(f"Iteration {iter}: Best Generation ID: {best_sample_idx}")
@@ -491,26 +583,6 @@ class EurekaPlus:
         fig.tight_layout(pad=3.0)
         plt.savefig(self.cfg.paths.summary_figure)
         np.savez(self.cfg.paths.summary_stats, execute_rates=execute_rates, best_successes=best_successes, best_reward_correlations=best_reward_correlations, best_code_paths=best_code_paths)
-    
-    def update_messages(self, llm_response: str, signal: str, success: bool):
-        # Resolve output guidance
-        guidance = ""
-        if self.cfg.enable_module_pool:
-            pass
-        else:
-            if success:
-                guidance += self.prompts.success_guidance
-            else:
-                guidance += self.prompts.failure_guidance
-            guidance += self.prompts.code_output_tip
-        
-        # Add the best LLM response and feedback to messages
-        self.messages += [{"role": "assistant", "content": llm_response}]
-        self.messages += [{"role": "user", "content": signal + guidance}]
-
-        # Save dictionary as JSON file
-        with open(self.cfg.paths.message_log, 'w') as file:
-            json.dump(self.messages, file, indent=4)
 
     def run(self):
         # The main iteration loop for improving reward code
@@ -541,15 +613,12 @@ class EurekaPlus:
             # Gather RL training results and construct reward reflection
             exec_success = False 
             for response_id, (code_string, rl_run) in enumerate(zip(code_strs, rl_runs)):
-                success = self.gather_result(iter, response_id, rl_run)
+                success = self.gather_result(iter, response_id, code_string, rl_run)
                 if success:
                     exec_success = True
             
             if not exec_success:
                 logging.info(f"Iteration {iter}: All code generation failed, requesting LLM to re-generate...")
-                signal = self.stats_manager.get_first_signal_within_iteration(iter)
-                assert signal is not None
-                self.update_messages(contents[0], signal, False)
                 continue
 
             # Analyze results and prepare for the next iteration
