@@ -84,7 +84,7 @@ def extract_observation_functions(filename, task='ant'):
 
 import ast
 
-def get_function_signature(code_string: str) -> Tuple[str, List[str]]:
+def get_function_signature(code_string: str, in_class: bool) -> Tuple[str, List[str]]:
     # Parse the code string into an AST
     module = ast.parse(code_string)
 
@@ -95,13 +95,18 @@ def get_function_signature(code_string: str) -> Tuple[str, List[str]]:
     if not function_defs:
         raise ValueError("No function definitions found in the provided code string.")
 
-    # For simplicity, we'll just return the signature of the first function definition
-    function_def = function_defs[0]
+    # For simplicity, we'll just return the signature of the LAST function definition
+    function_def = function_defs[-1]
+    args = function_def.args.args
 
     input_lst = []
-    # Construct the function signature (within object class)
-    signature = function_def.name + '(self.' + ', self.'.join(arg.arg for arg in function_def.args.args) + ')'
-    for arg in function_def.args.args:
+    if in_class:
+        # Construct the function signature (within object class)
+        signature = function_def.name + '(self.' + ', self.'.join(arg.arg for arg in args) + ')'
+    else:
+        # Construct the function signature (standalone function)
+        signature = function_def.name + '(' + ', '.join(arg.arg for arg in args) + ')'
+    for arg in args:
         input_lst.append(arg.arg)
     return signature, input_lst
 

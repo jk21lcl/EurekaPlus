@@ -70,8 +70,6 @@ class EurekaPlus:
         
         if cfg.enable_module_pool:
             initial_system_with_pool = self.prompts.initial_system_with_pool.format(
-                task_description=self.task_description,
-                task_obs_code_string=self.task_obs_code_string,
                 task_reward_signature_string=self.prompts.reward_signature,
             )
             self.messages.append({"role": "system", "content": initial_system_with_pool})
@@ -241,7 +239,7 @@ class EurekaPlus:
             self.messages.append({"role": "assistant", "content": parsed_outputs[0].model_dump_json()})
         return parsed_outputs
         
-    def call_llm_for_module(self, user_prompt: str, add_tip: bool = True) -> Tuple[str, str]:
+    def call_llm_for_module(self, user_prompt: str) -> Tuple[str, str]:
         """
         Call LLM with user prompt and return the code string and function signature.
         Retries up to 10 times if call fails.
@@ -249,13 +247,14 @@ class EurekaPlus:
         Return the code string and its function signature.
         Only be called for module pool mode.
         """
-        # Add module output tip to the user prompt
-        if add_tip:
-            user_prompt = user_prompt + self.prompts.module_output_tip
         self.messages.append({"role": "user", "content": user_prompt})
+
+        def post_process_for_code_out_class(code_string: str) -> Tuple[str, str]:
+            return self.post_process_for_code(code_string, in_class=False)
+
         processed_contents = self.call_llm_with_retry(
             sample=1,
-            post_process=self.post_process_for_code,
+            post_process=post_process_for_code_out_class,
         )
         self.messages.pop()  # Remove the user prompt after call
         return processed_contents[0]
@@ -266,7 +265,13 @@ class EurekaPlus:
         """
         # Design the reward module specifications
         logging.info(f"Iteration {iter}: Designing reward module specifications for the pool...")
-        spec_list = self.call_llm_and_parse(self.prompts.spec_design, ModuleSpecList)[0]
+        spec_list = self.call_llm_and_parse(
+            self.prompts.spec_design.format(
+                task_obs_code_string=self.task_obs_code_string,
+                task_description=self.task_description,
+            ),
+            ModuleSpecList,
+        )[0]
 
         # Implement each reward module based on the designed specifications
         logging.info(f"Iteration {iter}: Implementing reward modules for the pool...")
@@ -293,6 +298,8 @@ class EurekaPlus:
         # Generate improvement plan for the pool
         improve_plan = self.call_llm_and_parse(
             best_run.signal + self.prompts.pool_improvement_guidance.format(
+                task_obs_code_string=self.task_obs_code_string,
+                task_description=self.task_description,
                 module_pool_details=self.pool_manager.show(view="edit"),
             ),
             ImprovePlan,
@@ -316,8 +323,8 @@ class EurekaPlus:
                 code=module.code,
                 description=modify_req.description,
             )
-            code_string, _ = self.call_llm_for_module(user_prompt, add_tip=False)
-            self.pool_manager.modify_module(modify_req.name, code_string)
+            code_string, signature = self.call_llm_for_module(user_prompt)
+            self.pool_manager.modify_module(modify_req.name, code_string, signature)
         logging.info(f"Iteration {iter}: Improved pool: \n" + self.pool_manager.show(view="debug"))
 
     def update_pool(self, phase: Phase, iter: int):
@@ -329,10 +336,6 @@ class EurekaPlus:
     def generate_candidates_from_pool(self, phase: Phase, iter: int) -> List[Tuple[str, str]]:
         prompt_template = ""
         if phase == Phase.BOOTSTRAP:
-            # Remove the specification design messages
-            assert len(self.messages) == 3
-            self.messages = self.messages[:1]
-            
             prompt_template = self.prompts.initial_function_assembly
         elif phase == Phase.ITERATE:
             prompt_template = self.prompts.function_assembly_with_feedback
@@ -351,17 +354,15 @@ class EurekaPlus:
         for i, module_usage_list in enumerate(module_usage_lists):
             reward_function = self.pool_manager.construct_reward_function(module_usage_list)
             logging.info(f"Iteration {iter}: Generated reward function {i} from pool:\n" + reward_function + "\n")
-            signature, _ = get_function_signature(reward_function)
+            signature, _ = get_function_signature(reward_function, in_class=True)
             function_and_signatures.append((reward_function, signature))
 
         # Save messages as JSON file
         with open(self.cfg.paths.message_log, 'w') as file:
             json.dump(self.messages, file, indent=4)
 
-        if phase == Phase.ITERATE:
-            # Remove the messages of the previous iteration
-            assert len(self.messages) == 6
-            self.messages = self.messages[:1] + self.messages[-1:]
+        # Keep only the initial system and the function construction user prompt for next iteration
+        self.messages = self.messages[:1] + self.messages[-1:]
         
         return function_and_signatures
 
@@ -394,15 +395,16 @@ class EurekaPlus:
 
         logging.info(f"Iteration {iter}: Generating {self.cfg.sample} reward function candidates")
 
+        def post_process_for_code_in_class(code_string: str) -> Tuple[str, str]:
+            return self.post_process_for_code(code_string, in_class=True)
+        
         processed_contents = self.call_llm_with_retry(
             sample=self.cfg.sample,
-            post_process=self.post_process_for_code,
+            post_process=post_process_for_code_in_class,
         )
         
-        # Remove the last round of assistant messages and user prompt for next calls
-        if phase == Phase.ITERATE:
-            assert len(self.messages) == 4
-            self.messages = self.messages[:2]
+        # Keep only the initial system and first user message for next iteration
+        self.messages = self.messages[:2]
 
         return processed_contents[:self.cfg.sample]
     
@@ -442,7 +444,7 @@ class EurekaPlus:
                 return extracted_str.group(1).strip()
         return string
 
-    def post_process_for_code(self, code_string: str) -> Tuple[str, str]:
+    def post_process_for_code(self, code_string: str, in_class: bool) -> Tuple[str, str]:
         """
         Post-process the generated code string and extract function signature.
         Return the processed code string and its function signature.
@@ -482,7 +484,7 @@ class EurekaPlus:
 
         # Extract function signature
         try:
-            signature, _ = get_function_signature(code_string)
+            signature, _ = get_function_signature(code_string, in_class)
         except Exception as e:
             logging.info(f"Cannot parse function signature! Error: {e}")
             raise e
@@ -493,7 +495,6 @@ class EurekaPlus:
         """
         Integrate the generated reward code into the environment code and save to file.
         """
-        # TODO: Figure out why it always fails for module pool mode
         reward_signature = [
             f"self.rew_buf[:], self.rew_dict = {signature}",
             f"self.extras['llm_reward'] = self.rew_buf.mean()",

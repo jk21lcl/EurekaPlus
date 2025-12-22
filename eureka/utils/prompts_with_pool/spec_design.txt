@@ -1,3 +1,5 @@
-Based on the provided context, design some reward modules that will be included in the module pool.
+The Python environment is {task_obs_code_string}.
+The task is {task_description}.
+Design some reward modules that will be included in the module pool.
 Just provide the function specifications and a brief description of what each module does.
 Ensure that the modules are diverse and capture different aspects of the task.

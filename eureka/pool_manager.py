@@ -63,10 +63,11 @@ class PoolManager:
     def delete_module(self, name: str):
         self.modules = [m for m in self.modules if m.spec.name != name]
     
-    def modify_module(self, name: str, new_code: str):
+    def modify_module(self, name: str, new_code: str, signature: str):
         module = self.find_module_by_name(name)
         if module is not None:
             module.code = new_code
+            module.signature = signature
     
     def add_module_usage_lists(self, iteration: int, usage_lists: List[ModuleUsageList]):
         self.module_usage_lists[iteration] = usage_lists
@@ -133,28 +134,34 @@ class PoolManager:
                 raise ValueError(f"Module {usage.name} not found in pool.")
             input_set.update(module.spec.inputs)
         input_args = ", ".join(sorted(input_set))
+
+        # Construct each module function code that will be included
+        # TorchScript does not support dynamic imports, so we inline all module codes before the main function
+        lines = []
+        for usage in usage_list.usages:
+            module = self.find_module_by_name(usage.name)
+            lines.append(module.code.strip())
+            lines.append("\n")
         
         # Construct main reward function code
-        lines = []
         lines.append("@torch.jit.script")
-        lines.append(f"def compute_reward({input_args}) -> Tuple[float, Dict[str, float]]:")
-        lines.append("    module_rewards = {}")
+        lines.append(f"def compute_reward({input_args}) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:")
         lines.append("    total_reward = 0.0")
         
         for usage in usage_list.usages:
             module = self.find_module_by_name(usage.name)
             # Prepare the call line
-            call_args = ", ".join(module.spec.inputs)
-            lines.append(f"    reward_{module.spec.name} = {module.spec.name}({call_args})")
-            lines.append(f"    module_rewards['{module.spec.name}'] = reward_{module.spec.name}")
+            lines.append(f"    reward_{module.spec.name} = {module.signature}")
             lines.append(f"    total_reward += {usage.weight} * reward_{module.spec.name}")
         
-        lines.append("    return total_reward, module_rewards")
-
-        # Construct each module function code that will be included
+        # Prepare the reward dict
+        # TorchScript does not support dynamic dict construction, so we directly define it here
+        lines.append("    module_rewards = {")
         for usage in usage_list.usages:
             module = self.find_module_by_name(usage.name)
-            lines.append("\n")
-            lines.append(module.code.strip())
+            lines.append(f"        '{module.spec.name}': reward_{module.spec.name},")
+        lines.append("    }")
+        
+        lines.append("    return total_reward, module_rewards")
         
         return "\n".join(lines)

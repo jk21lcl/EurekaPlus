@@ -1,4 +1,7 @@
-Based on the training statistics of the previous RL training, please suggest improvements to the current module pool to better suit the task requirements.
+The Python environment is {task_obs_code_string}.
+The task is {task_description}.
+
+Based on the training statistics of the RL training, please fix the bugs in the existing modules or suggest improvements to the current module pool to better suit the task requirements.
 The details of the current module pool are as follows:
 {module_pool_details}
 

@@ -149,7 +149,7 @@ def main(cfg):
 
             # Add the Eureka Reward Signature to the environment code
             try:
-                gpt_reward_signature, input_lst = get_function_signature(code_string)
+                gpt_reward_signature, input_lst = get_function_signature(code_string, in_class=True)
             except Exception as e:
                 logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse function signature!")
                 continue

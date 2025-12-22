@@ -4,7 +4,6 @@ To improve the robustness, the reward function should combine multiple reward mo
 You should carefully design each reward module to form a module pool that can provide diverse and complementary feedback to the agent.
 Then you can select and combine multiple reward modules from the pool to form the final reward function.
 
-Now the task is {task_description}, and the Python environment is {task_obs_code_string}.
 Your reward function should use useful variables from the environment as inputs. As an example,
 the reward function signature can be: {task_reward_signature_string}
 Since the reward function will be decorated with @torch.jit.script,
