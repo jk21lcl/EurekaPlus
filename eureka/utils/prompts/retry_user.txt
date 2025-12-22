@@ -1,0 +1,8 @@
+Previous response:
+<invalid_response>
+
+Error message:
+<error_message>
+
+Please fix the error and regenerate the response.
+Do not change other parts unnecessarily.

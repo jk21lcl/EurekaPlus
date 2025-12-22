@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
-from typing import Literal, List, Optional
+from typing import Dict, Literal, List, Optional
 
 class ModuleSpec(BaseModel):
     name: str = Field(description="The name of the reward module function.")
@@ -21,17 +21,17 @@ class ModuleUsageList(BaseModel):
 
 class AddModuleRequest(BaseModel):
     spec: ModuleSpec = Field(description="The specification of the reward module function.")
-    reasoning: str = Field(description="The reasoning behind adding this module.")
+    reasoning: Optional[str] = Field(default=None, description="The reasoning behind adding this module.")
 
 class DeleteModuleRequest(BaseModel):
     name: str = Field(description="The name of the module to be deleted.")
-    reasoning: str = Field(description="The reasoning behind deleting this module.")
+    reasoning: Optional[str] = Field(default=None, description="The reasoning behind deleting this module.")
 
 class ModifyModuleRequest(BaseModel):
     # Specification will remain the same; only code may change
     name: str = Field(description="The name of the module to be modified.")
     description: str = Field(description="The description of the modifications to be made.")
-    reasoning: str = Field(description="The reasoning behind modifying this module.")
+    reasoning: Optional[str] = Field(default=None, description="The reasoning behind modifying this module.")
 
 class ImprovePlan(BaseModel):
     add_modules: List[AddModuleRequest] = Field(default_factory=list, description="List of modules to be added.")
@@ -47,6 +47,7 @@ class Module:
 class PoolManager:
     def __init__(self):
         self.modules: List[Module] = []
+        self.module_usage_lists: Dict[int, List[ModuleUsageList]] = {}
     
     def find_module_by_name(self, name: str) -> Optional[Module]:
         for m in self.modules:
@@ -66,6 +67,16 @@ class PoolManager:
         module = self.find_module_by_name(name)
         if module is not None:
             module.code = new_code
+    
+    def add_module_usage_lists(self, iteration: int, usage_lists: List[ModuleUsageList]):
+        self.module_usage_lists[iteration] = usage_lists
+    
+    def get_module_usage_list(self, iteration: int, index: int) -> Optional[ModuleUsageList]:
+        if iteration in self.module_usage_lists:
+            usage_lists = self.module_usage_lists[iteration]
+            if 0 <= index < len(usage_lists):
+                return usage_lists[index]
+        return None
     
     def show(
         self,
@@ -125,6 +136,7 @@ class PoolManager:
         
         # Construct main reward function code
         lines = []
+        lines.append("@torch.jit.script")
         lines.append(f"def compute_reward({input_args}) -> Tuple[float, Dict[str, float]]:")
         lines.append("    module_rewards = {}")
         lines.append("    total_reward = 0.0")

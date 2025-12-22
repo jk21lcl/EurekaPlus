@@ -7,7 +7,7 @@ import subprocess
 import time
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, List, Optional, Tuple, Type, TypeVar
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -60,9 +60,14 @@ class EurekaPlus:
             api_key=cfg.api_key,
             base_url=cfg.base_url,
         )
+
+        # Token usage stats
+        self.first_prompt_tokens = 0
+        self.total_prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
         
         if cfg.enable_module_pool:
-            assert self.cfg.sample == 1, "Module pool currently only supports sample=1!"
             initial_system_with_pool = self.prompts.initial_system_with_pool.format(
                 task_description=self.task_description,
                 task_obs_code_string=self.task_obs_code_string,
@@ -105,73 +110,158 @@ class EurekaPlus:
         with open(self.cfg.paths.generated_train_config, 'w') as new_yamlfile:
             yaml.safe_dump(data, new_yamlfile)
     
-    def call_llm_and_parse(self, user_prompt: str, output_model: Type[T]) -> T:
+    def call_llm_with_retry(
+            self,
+            sample: int = 1,
+            post_process: Optional[Callable[[str], Any]] = None,
+        ) -> Tuple[List[str], List[Any]]:
+        """
+        Call LLM with retry mechanism.
+        Post-process the output if post_process function is provided.
+        Return the raw contents and processed contents.
+        Do not modify messages except temporarily adding retry prompt.
+        """
+        logging.info(f"Generating {sample} samples with {self.model}")
+
+        total_samples = 0
+        chunk_size = sample
+
+        contents: List[str] = []
+        processed_contents: List[Any] = []
+
+        first_prompt_tokens = 0
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_tokens = 0
+
+        # Repeatedly call LLM until enough samples are collected
+        while total_samples < sample:
+            logging.info(f"Total Samples Collected: {total_samples}/{sample}")
+            # Attempt to call LLM with retries
+            success = False
+            for attempt in range(10):
+                contents_cur: List[str] = []
+                try:
+                    # Call LLM
+                    logging.info("Current Chunk Size", chunk_size)
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=self.messages,
+                        temperature=self.cfg.temperature,
+                        n=chunk_size,
+                    )
+
+                    # Record token usages
+                    prompt_tokens = response.usage.prompt_tokens
+                    if attempt == 0 and total_samples == 0:
+                        first_prompt_tokens = prompt_tokens
+                    total_prompt_tokens += prompt_tokens
+                    total_completion_tokens += response.usage.completion_tokens
+                    total_tokens += response.usage.total_tokens
+
+                    # Extract contents and validate
+                    contents_cur = [choice.message.content for choice in response.choices]
+                    if len(contents_cur) != chunk_size:
+                        raise ValueError(f"Received {len(contents_cur)} samples, expected {chunk_size} samples!")
+                    for i, content in enumerate(contents_cur):
+                        if content is None:
+                            raise ValueError(f"Received empty content for sample {total_samples + i}!")
+                    
+                    logging.info(f"Attempt {attempt+1}: LLM Response: " + str(contents_cur))
+
+                    # Post-process if needed
+                    processed_contents_cur = [None] * chunk_size
+                    if post_process is not None:
+                        processed_contents_cur = [post_process(content) for content in contents_cur]
+                    
+                    # Remove previous retry prompts from messages
+                    if attempt > 0:
+                        self.messages = self.messages[:-2]
+
+                    logging.info(f"Successfully generated {chunk_size} samples in attempt {attempt+1}.")
+                    success = True
+                    contents.extend(contents_cur)
+                    processed_contents.extend(processed_contents_cur)
+                    total_samples += chunk_size
+                    break
+                except Exception as e:
+                    # Remove previous retry prompts from messages
+                    if attempt > 0:
+                        self.messages = self.messages[:-2]
+
+                    # Add retry prompts to messages
+                    self.messages.append({"role": "system", "content": self.prompts.retry_system})
+                    self.messages.append({"role": "user", "content": self.prompts.retry_user.format(
+                        invalid_response=str(contents_cur),
+                        error_message=str(e),
+                    )})
+                    if attempt >= 3:
+                        chunk_size = max(int(chunk_size / 2), 1)
+                    logging.info(f"Attempt {attempt+1} failed with error: {e}")
+                    time.sleep(1)
+            if not success:
+                logging.info("Code terminated due to too many failed attempts!")
+                exit()
+        
+        logging.info(f"First Prompt Tokens (without retry): {first_prompt_tokens}")
+        logging.info(f"Total Prompt Tokens (with retry): {total_prompt_tokens}")
+        logging.info(f"Total Completion Tokens: {total_completion_tokens}")
+        logging.info(f"Total Tokens: {total_tokens}")
+
+        return contents[:sample], processed_contents[:sample]
+
+    def call_llm_and_parse(
+            self,
+            user_prompt: str,
+            output_model: Type[T],
+            sample: int = 1,
+            add_llm_response: bool = True,
+        ) -> List[T]:
         """
         Call LLM with user prompt and parse the JSON output into the specified Pydantic model.
         Retries up to 10 times if parsing fails.
         Add user prompt with JSON output tip and LLM response to messages.
+        Only be called for module pool mode.
         """
+        def parse_json(content: str) -> T:
+            content = self.extract_json(content)
+            parsed_output = output_model.model_validate_json(content)
+            return parsed_output
+
         # Add JSON output tip to the user prompt
         user_prompt_with_tip = user_prompt + self.prompts.json_output_tip.format(schema=output_model.model_json_schema())
         self.messages.append({"role": "user", "content": user_prompt_with_tip})
-        for attempt in range(10):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.messages,
-                    temperature=self.cfg.temperature,
-                )
-                content = response.choices[0].message.content
-                logging.info(f"LLM Response Content:\n" + content + "\n")
-                content = self.extract_json(content)
-                parsed_output = output_model.model_validate_json(content)
-                
-                # Add the valid response to messages
-                self.messages.append({"role": "assistant", "content": content})
-                
-                return parsed_output
-            
-            except ValidationError as ve:
-                logging.info(f"Attempt {attempt}: JSON parsing error: {ve}")
-            except Exception as e:
-                logging.info(f"Attempt {attempt}: LLM call error: {e}")
-            time.sleep(1)
-        raise RuntimeError("Failed to get valid JSON response from LLM after multiple attempts.")
-
+        contents, parsed_outputs = self.call_llm_with_retry(
+            sample=sample,
+            post_process=parse_json,
+        )
+        if add_llm_response:
+            self.messages.append({"role": "assistant", "content": contents})
+        return parsed_outputs
+        
     def call_llm_for_module(self, user_prompt: str, add_tip: bool = True) -> Tuple[str, str]:
         """
-        Call LLM with user prompt and return the code string output after post-processing.
+        Call LLM with user prompt and return the code string and function signature.
         Retries up to 10 times if call fails.
         Do not modify messages except temporarily adding user prompt.
         Return the code string and its function signature.
+        Only be called for module pool mode.
         """
+        def post_process_and_extract_signature(content: str) -> Tuple[str, str]:
+            content = self.post_process(content)
+            signature, _ = get_function_signature(content)
+            return content, signature
+        
         # Add module output tip to the user prompt
         if add_tip:
             user_prompt = user_prompt + self.prompts.module_output_tip
         self.messages.append({"role": "user", "content": user_prompt})
-        for attempt in range(10):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=self.messages,
-                    temperature=self.cfg.temperature,
-                )
-                content = response.choices[0].message.content
-                
-                # Remove the user prompt for next calls
-                self.messages.pop()
-                
-                # Post-process the code string
-                content = self.post_process(content)
-                signature, _ = get_function_signature(content)
-                return content, signature
-            
-            except ValueError as ve:
-                logging.info(f"Attempt {attempt}: Code parsing error: {ve}")
-            except Exception as e:
-                logging.info(f"Attempt {attempt}: LLM call error: {e}")
-            time.sleep(1)
-        raise RuntimeError("Failed to get valid code response from LLM after multiple attempts.")
+        _, processed_contents = self.call_llm_with_retry(
+            sample=1,
+            post_process=post_process_and_extract_signature,
+        )
+        self.messages.pop()  # Remove the user prompt after call
+        return processed_contents[0]
 
     def init_pool(self, iter: int):
         """
@@ -179,7 +269,7 @@ class EurekaPlus:
         """
         # Design the reward module specifications
         logging.info(f"Iteration {iter}: Designing reward module specifications for the pool...")
-        spec_list = self.call_llm_and_parse(self.prompts.spec_design, ModuleSpecList)
+        spec_list = self.call_llm_and_parse(self.prompts.spec_design, ModuleSpecList)[0]
 
         # Implement each reward module based on the designed specifications
         logging.info(f"Iteration {iter}: Implementing reward modules for the pool...")
@@ -199,13 +289,17 @@ class EurekaPlus:
         if best_run is None:
             best_run = self.stats_manager.get_first_run_within_iteration(iter - 1)
         
+        best_run_id = best_run.response_id
+        usage_list = self.pool_manager.get_module_usage_list(iter - 1, best_run_id)
+        self.messages.append({"role": "assistant", "content": usage_list.model_dump_json()})
+        
         # Generate improvement plan for the pool
         improve_plan = self.call_llm_and_parse(
             best_run.signal + self.prompts.pool_improvement_guidance.format(
                 module_pool_details=self.pool_manager.show(view="edit"),
             ),
             ImprovePlan,
-        )
+        )[0]
         logging.info(f"Iteration {iter}: Improving pool with {len(improve_plan.add_modules)} additions, {len(improve_plan.delete_modules)} deletions, and {len(improve_plan.modify_modules)} modifications.")
         logging.info(f"Improvement Plan: \n" + improve_plan.model_dump_json())
         
@@ -240,31 +334,38 @@ class EurekaPlus:
         if phase == Phase.BOOTSTRAP:
             # Remove the specification design messages
             assert len(self.messages) == 3
-            self.messages = self.messages[:-2]
+            self.messages = self.messages[:1]
             
             prompt_template = self.prompts.initial_function_assembly
         elif phase == Phase.ITERATE:
             prompt_template = self.prompts.function_assembly_with_feedback
         
-        module_usage_list = self.call_llm_and_parse(
+        module_usage_lists = self.call_llm_and_parse(
             prompt_template.format(
                 module_pool=self.pool_manager.show(view="assembly"),
             ),
             ModuleUsageList,
+            sample=self.cfg.sample,
+            add_llm_response=False,
         )
-        reward_function = self.pool_manager.construct_reward_function(module_usage_list)
-        logging.info(f"Iteration {iter}: Generated reward function from pool:\n" + reward_function + "\n")
-        
+        self.pool_manager.add_module_usage_lists(iter, module_usage_lists)
+
+        reward_functions = []
+        for i, module_usage_list in enumerate(module_usage_lists):
+            reward_function = self.pool_manager.construct_reward_function(module_usage_list)
+            logging.info(f"Iteration {iter}: Generated reward function {i} from pool:\n" + reward_function + "\n")
+            reward_functions.append(reward_function)
+
         # Save dictionary as JSON file
         with open(self.cfg.paths.message_log, 'w') as file:
             json.dump(self.messages, file, indent=4)
 
         if phase == Phase.ITERATE:
             # Remove the messages of the previous iteration
-            assert len(self.messages) == 7
-            self.messages = self.messages[0] + self.messages[-2:]
+            assert len(self.messages) == 6
+            self.messages = self.messages[:1] + self.messages[-1:]
         
-        return [reward_function]
+        return reward_functions
 
     def generate_candidates_from_scratch(self, phase: Phase, iter: int) -> List[str]:
         """
@@ -344,7 +445,7 @@ class EurekaPlus:
         # Remove the last round of assistant messages and user prompt for next calls
         if phase == Phase.ITERATE:
             assert len(self.messages) == 4
-            self.messages = self.messages[:-2]
+            self.messages = self.messages[:2]
 
         return contents[:self.cfg.sample]
     
