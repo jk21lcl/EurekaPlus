@@ -7,14 +7,14 @@ import subprocess
 import time
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple, Type, TypeVar
+from typing import Callable, List, Literal, Optional, Tuple, Type, TypeVar
 
 import numpy as np
 import matplotlib.pyplot as plt
 import yaml
 from omegaconf import DictConfig
 from openai import OpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from pool_manager import ImprovePlan, PoolManager, ModuleSpecList, ModuleUsageList
 from stats_manager import RunStats, StatsManager
@@ -23,6 +23,7 @@ from utils.file_utils import load_tensorboard_logs
 from utils.extract_task_code import file_to_string, get_function_signature
 
 T = TypeVar('T', bound=BaseModel)
+U = TypeVar('U')
 
 class Phase(Enum):
     BOOTSTRAP = "bootstrap"
@@ -110,15 +111,16 @@ class EurekaPlus:
         with open(self.cfg.paths.generated_train_config, 'w') as new_yamlfile:
             yaml.safe_dump(data, new_yamlfile)
     
+    
+    
     def call_llm_with_retry(
             self,
             sample: int = 1,
-            post_process: Optional[Callable[[str], Any]] = None,
-        ) -> Tuple[List[str], List[Any]]:
+            post_process: Callable[[str], U] = lambda x: x,
+        ) -> List[U]:
         """
         Call LLM with retry mechanism.
-        Post-process the output if post_process function is provided.
-        Return the raw contents and processed contents.
+        Return the list of post-processed contents.
         Do not modify messages except temporarily adding retry prompt.
         """
         logging.info(f"Generating {sample} samples with {self.model}")
@@ -126,8 +128,7 @@ class EurekaPlus:
         total_samples = 0
         chunk_size = sample
 
-        contents: List[str] = []
-        processed_contents: List[Any] = []
+        processed_contents: List[U] = []
 
         first_prompt_tokens = 0
         total_prompt_tokens = 0
@@ -143,7 +144,7 @@ class EurekaPlus:
                 contents_cur: List[str] = []
                 try:
                     # Call LLM
-                    logging.info("Current Chunk Size", chunk_size)
+                    logging.info(f"Current Chunk Size: {chunk_size}")
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=self.messages,
@@ -167,28 +168,23 @@ class EurekaPlus:
                         if content is None:
                             raise ValueError(f"Received empty content for sample {total_samples + i}!")
                     
-                    logging.info(f"Attempt {attempt+1}: LLM Response: " + str(contents_cur))
+                    logging.info(f"Attempt {attempt+1}: LLM Response: ")
+                    for i, content in enumerate(contents_cur):
+                        logging.info(f"Sample {total_samples + i}:\n{content}\n")
 
-                    # Post-process if needed
-                    processed_contents_cur = [None] * chunk_size
-                    if post_process is not None:
-                        processed_contents_cur = [post_process(content) for content in contents_cur]
+                    # Post-process contents
+                    processed_contents_cur = [post_process(content) for content in contents_cur]
                     
                     # Remove previous retry prompts from messages
                     if attempt > 0:
-                        self.messages = self.messages[:-2]
+                        self.messages = self.messages[:-2*attempt]
 
                     logging.info(f"Successfully generated {chunk_size} samples in attempt {attempt+1}.")
                     success = True
-                    contents.extend(contents_cur)
                     processed_contents.extend(processed_contents_cur)
                     total_samples += chunk_size
                     break
                 except Exception as e:
-                    # Remove previous retry prompts from messages
-                    if attempt > 0:
-                        self.messages = self.messages[:-2]
-
                     # Add retry prompts to messages
                     self.messages.append({"role": "system", "content": self.prompts.retry_system})
                     self.messages.append({"role": "user", "content": self.prompts.retry_user.format(
@@ -208,7 +204,12 @@ class EurekaPlus:
         logging.info(f"Total Completion Tokens: {total_completion_tokens}")
         logging.info(f"Total Tokens: {total_tokens}")
 
-        return contents[:sample], processed_contents[:sample]
+        self.first_prompt_tokens += first_prompt_tokens
+        self.total_prompt_tokens += total_prompt_tokens
+        self.completion_tokens += total_completion_tokens
+        self.total_tokens += total_tokens
+
+        return processed_contents[:sample]
 
     def call_llm_and_parse(
             self,
@@ -231,12 +232,13 @@ class EurekaPlus:
         # Add JSON output tip to the user prompt
         user_prompt_with_tip = user_prompt + self.prompts.json_output_tip.format(schema=output_model.model_json_schema())
         self.messages.append({"role": "user", "content": user_prompt_with_tip})
-        contents, parsed_outputs = self.call_llm_with_retry(
+        parsed_outputs = self.call_llm_with_retry(
             sample=sample,
             post_process=parse_json,
         )
         if add_llm_response:
-            self.messages.append({"role": "assistant", "content": contents})
+            assert sample == 1, "Only support adding single LLM response to messages."
+            self.messages.append({"role": "assistant", "content": parsed_outputs[0].model_dump_json()})
         return parsed_outputs
         
     def call_llm_for_module(self, user_prompt: str, add_tip: bool = True) -> Tuple[str, str]:
@@ -247,18 +249,13 @@ class EurekaPlus:
         Return the code string and its function signature.
         Only be called for module pool mode.
         """
-        def post_process_and_extract_signature(content: str) -> Tuple[str, str]:
-            content = self.post_process(content)
-            signature, _ = get_function_signature(content)
-            return content, signature
-        
         # Add module output tip to the user prompt
         if add_tip:
             user_prompt = user_prompt + self.prompts.module_output_tip
         self.messages.append({"role": "user", "content": user_prompt})
-        _, processed_contents = self.call_llm_with_retry(
+        processed_contents = self.call_llm_with_retry(
             sample=1,
-            post_process=post_process_and_extract_signature,
+            post_process=self.post_process_for_code,
         )
         self.messages.pop()  # Remove the user prompt after call
         return processed_contents[0]
@@ -329,7 +326,7 @@ class EurekaPlus:
         elif phase == Phase.ITERATE:
             self.improve_pool(iter)
 
-    def generate_candidates_from_pool(self, phase: Phase, iter: int) -> List[str]:
+    def generate_candidates_from_pool(self, phase: Phase, iter: int) -> List[Tuple[str, str]]:
         prompt_template = ""
         if phase == Phase.BOOTSTRAP:
             # Remove the specification design messages
@@ -350,13 +347,14 @@ class EurekaPlus:
         )
         self.pool_manager.add_module_usage_lists(iter, module_usage_lists)
 
-        reward_functions = []
+        function_and_signatures: List[Tuple[str, str]] = []
         for i, module_usage_list in enumerate(module_usage_lists):
             reward_function = self.pool_manager.construct_reward_function(module_usage_list)
             logging.info(f"Iteration {iter}: Generated reward function {i} from pool:\n" + reward_function + "\n")
-            reward_functions.append(reward_function)
+            signature, _ = get_function_signature(reward_function)
+            function_and_signatures.append((reward_function, signature))
 
-        # Save dictionary as JSON file
+        # Save messages as JSON file
         with open(self.cfg.paths.message_log, 'w') as file:
             json.dump(self.messages, file, indent=4)
 
@@ -365,12 +363,12 @@ class EurekaPlus:
             assert len(self.messages) == 6
             self.messages = self.messages[:1] + self.messages[-1:]
         
-        return reward_functions
+        return function_and_signatures
 
-    def generate_candidates_from_scratch(self, phase: Phase, iter: int) -> List[str]:
+    def generate_candidates_from_scratch(self, phase: Phase, iter: int) -> List[Tuple[str, str]]:
         """
         Generate multiple reward code candidates from LLM.
-        Return the raw LLM response strings.
+        Return the processed code strings and their function signatures.
         """
         # Add necessary messages based on phase
         if phase == Phase.BOOTSTRAP:
@@ -390,66 +388,29 @@ class EurekaPlus:
             self.messages += [{"role": "assistant", "content": best_run.content}]
             self.messages += [{"role": "user", "content": best_run.signal + guidance}]
 
-            # Save dictionary as JSON file
+            # Save messages as JSON file
             with open(self.cfg.paths.message_log, 'w') as file:
                 json.dump(self.messages, file, indent=4)
 
-        contents: List[str] = []
-        contents_cur: List[Optional[str]] = []
-        response_cur = None
-        total_samples = 0
-        total_token = 0
-        total_completion_token = 0
-        chunk_size = self.cfg.sample
+        logging.info(f"Iteration {iter}: Generating {self.cfg.sample} reward function candidates")
 
-        logging.info(f"Iteration {iter}: Generating {self.cfg.sample} samples with {self.model}")
-
-        while True:
-            if total_samples >= self.cfg.sample:
-                break
-            for attempt in range(1000):
-                try:
-                    response_cur = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=self.messages,
-                        temperature=self.cfg.temperature,
-                        n=chunk_size,
-                    )
-                    contents_cur = [choice.message.content for choice in response_cur.choices]
-                    if len(contents_cur) != chunk_size:
-                        raise ValueError(f"Received {len(contents_cur)} samples, expected {chunk_size} samples!")
-                    for i, content in enumerate(contents_cur):
-                        if content is None:
-                            raise ValueError(f"Received empty content for sample {total_samples + i}!")
-                    total_samples += chunk_size
-                    break
-                except Exception as e:
-                    if attempt >= 10:
-                        chunk_size = max(int(chunk_size / 2), 1)
-                        print("Current Chunk Size", chunk_size)
-                    logging.info(f"Attempt {attempt+1} failed with error: {e}")
-                    time.sleep(1)
-            if response_cur is None:
-                logging.info("Code terminated due to too many failed attempts!")
-                exit()
-
-            prompt_tokens = response_cur.usage.prompt_tokens
-            total_completion_token += response_cur.usage.completion_tokens
-            total_token += response_cur.usage.total_tokens
-            contents.extend(contents_cur)
+        processed_contents = self.call_llm_with_retry(
+            sample=self.cfg.sample,
+            post_process=self.post_process_for_code,
+        )
         
-        logging.info(f"Iteration {iter}: Prompt Tokens: {prompt_tokens}, Completion Tokens: {total_completion_token}, Total Tokens: {total_token}")
-        for id in range(self.cfg.sample):
-            logging.info(f"Iteration {iter}: Generated Sample {id}:\n " + contents[id] + "\n")
-
         # Remove the last round of assistant messages and user prompt for next calls
         if phase == Phase.ITERATE:
             assert len(self.messages) == 4
             self.messages = self.messages[:2]
 
-        return contents[:self.cfg.sample]
+        return processed_contents[:self.cfg.sample]
     
-    def generate_candidates(self, phase: Phase, iter: int) -> List[str]:
+    def generate_candidates(self, phase: Phase, iter: int) -> List[Tuple[str, str]]:
+        """
+        Generate multiple reward code candidates, either from scratch or from the module pool.
+        Return the processed code strings and their function signatures.
+        """
         if not self.cfg.enable_module_pool:
             return self.generate_candidates_from_scratch(phase, iter)
 
@@ -458,9 +419,21 @@ class EurekaPlus:
         return self.generate_candidates_from_pool(phase, iter)
     
     def extract_json(self, string: str) -> str:
+        # Fix the format in case the beginning is truncated
+        if string.strip().startswith("{") or string.strip().startswith("["):
+            pass
+        elif string.strip().startswith("```"):
+            pass
+        elif string.strip().startswith("json"):
+            string = "```" + string.strip()
+        elif string.strip().startswith("\""):
+            string = "{" + string
+        else:
+            string = "{\"" + string
+        
+        # Extract JSON string enclosed in LLM response
         patterns = [
             r'```json(.*?)```',
-            r'json(.*?)```',
             r'```(.*?)```',
         ]
         for pattern in patterns:
@@ -469,23 +442,26 @@ class EurekaPlus:
                 return extracted_str.group(1).strip()
         return string
 
-    def post_process(self, content_cur: str) -> str:
+    def post_process_for_code(self, code_string: str) -> Tuple[str, str]:
         """
-        Post-process the generated code string, returns the modified code string.
+        Post-process the generated code string and extract function signature.
+        Return the processed code string and its function signature.
         """
+        # Fix the format in case the beginning is truncated
+        if code_string.strip().startswith("py"):
+            code_string = "```" + code_string.strip()
+        
         # Regex patterns to extract python code enclosed in LLM response
         patterns = [
             r'```python(.*?)```',
-            r'python(.*?)```',
             r'```py(.*?)```',
             r'```(.*?)```',
         ]
         for pattern in patterns:
-            code_string = re.search(pattern, content_cur, re.DOTALL)
-            if code_string is not None:
-                code_string = code_string.group(1).strip()
+            matching = re.search(pattern, code_string, re.DOTALL)
+            if matching is not None:
+                code_string = matching.group(1).strip()
                 break
-        code_string = content_cur if not code_string else code_string
 
         # Remove unnecessary imports
         lines = code_string.split("\n")
@@ -503,23 +479,23 @@ class EurekaPlus:
                     new_lines.append("@torch.jit.script")
             new_lines.append(line)
         code_string = "\n".join(new_lines)
+
+        # Extract function signature
+        try:
+            signature, _ = get_function_signature(code_string)
+        except Exception as e:
+            logging.info(f"Cannot parse function signature! Error: {e}")
+            raise e
         
-        return code_string
+        return code_string, signature
     
-    def integrate_code_into_env(self, iter: int, response_id: int, code_string: str) -> bool:
+    def integrate_code_into_env(self, iter: int, response_id: int, code_string: str, signature: str):
         """
         Integrate the generated reward code into the environment code and save to file.
-        Returns the success status.
         """
-        # Add the Eureka Reward Signature to the environment code
-        try:
-            llm_reward_signature, input_lst = get_function_signature(code_string)
-        except Exception as e:
-            logging.info(f"Iteration {iter}: Code Run {response_id} cannot parse function signature! Error: {e}")
-            return False
-        
+        # TODO: Figure out why it always fails for module pool mode
         reward_signature = [
-            f"self.rew_buf[:], self.rew_dict = {llm_reward_signature}",
+            f"self.rew_buf[:], self.rew_dict = {signature}",
             f"self.extras['llm_reward'] = self.rew_buf.mean()",
             f"for rew_state in self.rew_dict: self.extras[rew_state] = self.rew_dict[rew_state].mean()",
         ]
@@ -541,10 +517,10 @@ class EurekaPlus:
             file.writelines("from torch import Tensor" + '\n')
             file.writelines(code_string + '\n')
 
-        # Copy the generated environment code to hydra output directory for bookkeeping
+        # Copy the generated environment code and the reward code to iteration-specific files
         shutil.copy(self.cfg.paths.generated_task_file, self.cfg.paths.generated_task_file_copy.format(iter=iter, id=response_id))
-        
-        return True
+        with open(self.cfg.paths.generated_reward_copy.format(iter=iter, id=response_id), 'w') as file:
+            file.writelines(code_string + '\n')
 
     def launch_rl_training(self, iter: int, response_id: int) -> subprocess.Popen:
         """ Launch RL training subprocess with the generated reward code """
@@ -646,7 +622,7 @@ class EurekaPlus:
 
         return True
     
-    def analyze_results(self, iter: int, contents: List[str]):
+    def analyze_iter_results(self, iter: int, contents: List[str]):
         """
         Analyze RL training results and prepare for the next iteration.
         """
@@ -690,26 +666,16 @@ class EurekaPlus:
         for iter in range(self.cfg.iteration):
             # Generate multiple reward code candidates
             phase = Phase.BOOTSTRAP if iter == 0 else Phase.ITERATE
-            contents = self.generate_candidates(phase, iter)
+            functions_and_signatures = self.generate_candidates(phase, iter)
 
-            # Post-process each generated code and launch RL training
+            # Integrate each generated code into the environment and launch RL training
             code_strs: List[str] = []
             rl_runs: List[Optional[subprocess.Popen]] = []
-            for response_id in range(self.cfg.sample):
-                content_cur = contents[response_id]
-                
-                logging.info(f"Iteration {iter}: Processing Code Run {response_id}")
-                code_string = self.post_process(content_cur)
-                with open(self.cfg.paths.generated_reward_copy.format(iter=iter, id=response_id), 'w') as file:
-                    file.writelines(code_string + '\n')
+            for response_id, (code_string, signature) in enumerate(functions_and_signatures):
+                self.integrate_code_into_env(iter, response_id, code_string, signature)
+                rl_run = self.launch_rl_training(iter, response_id)
                 code_strs.append(code_string)
-                
-                success = self.integrate_code_into_env(iter, response_id, code_string)
-                if success:
-                    rl_run = self.launch_rl_training(iter, response_id)
-                    rl_runs.append(rl_run)
-                else:
-                    rl_runs.append(None)
+                rl_runs.append(rl_run)
                 
             # Gather RL training results and construct reward reflection
             exec_success = False 
@@ -723,7 +689,7 @@ class EurekaPlus:
                 continue
 
             # Analyze results and prepare for the next iteration
-            self.analyze_results(iter, contents)
+            self.analyze_iter_results(iter, code_strs)
         
         # After all iterations, report the best reward code overall
         best_run_overall = self.stats_manager.get_best_run_overall()
@@ -733,3 +699,9 @@ class EurekaPlus:
             exit()
         logging.info(f"Task: {self.cfg.env.task}, Max Training Success {best_run_overall.success}, Correlation {best_run_overall.reward_correlation}, Best Reward Code Path: {best_run_overall.code_path}")
         shutil.copy(best_run_overall.code_path, self.cfg.paths.generated_task_file)
+
+        logging.info("Final Token Usage Statistics:")
+        logging.info(f"First Prompt Tokens (without retry): {self.first_prompt_tokens}")
+        logging.info(f"Total Prompt Tokens (with retry): {self.total_prompt_tokens}")
+        logging.info(f"Total Completion Tokens: {self.completion_tokens}")
+        logging.info(f"Total Tokens: {self.total_tokens}")
