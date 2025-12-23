@@ -50,6 +50,12 @@ def prepare_cfg(cfg: DictConfig):
     cfg.paths.eval_stats = "final_eval.npz"
     cfg.paths.message_log = "messages.json"
 
+    if cfg.enable_module_pool:
+        cfg.paths.spec_init_file = "module_pool_spec_init.json"
+        cfg.paths.improvement_file = "improvement_plan_iter{iter}.json"
+        cfg.paths.pool_file = "module_pool_iter{iter}.txt"
+        cfg.paths.module_usage_file = "module_usage_iter{iter}_response{id}.json"
+
     return cfg
 
 def evaluate_reward_code(cfg: DictConfig):

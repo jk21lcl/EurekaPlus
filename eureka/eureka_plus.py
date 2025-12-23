@@ -166,9 +166,9 @@ class EurekaPlus:
                         if content is None:
                             raise ValueError(f"Received empty content for sample {total_samples + i}!")
                     
-                    logging.info(f"Attempt {attempt+1}: LLM Response: ")
-                    for i, content in enumerate(contents_cur):
-                        logging.info(f"Sample {total_samples + i}:\n{content}\n")
+                    # logging.info(f"Attempt {attempt+1}: LLM Response: ")
+                    # for i, content in enumerate(contents_cur):
+                    #     logging.info(f"Sample {total_samples + i}:\n{content}\n")
 
                     # Post-process contents
                     processed_contents_cur = [post_process(content) for content in contents_cur]
@@ -236,7 +236,7 @@ class EurekaPlus:
         )
         if add_llm_response:
             assert sample == 1, "Only support adding single LLM response to messages."
-            self.messages.append({"role": "assistant", "content": parsed_outputs[0].model_dump_json()})
+            self.messages.append({"role": "assistant", "content": parsed_outputs[0].model_dump_json(indent=4)})
         return parsed_outputs
         
     def call_llm_for_module(self, user_prompt: str) -> Tuple[str, str]:
@@ -273,17 +273,19 @@ class EurekaPlus:
             ModuleSpecList,
         )[0]
 
+        # Save module specifications as JSON file
+        with open(self.cfg.paths.spec_init_file, 'w') as file:
+            file.write(spec_list.model_dump_json(indent=4))
+
         # Implement each reward module based on the designed specifications
         logging.info(f"Iteration {iter}: Implementing reward modules for the pool...")
         for spec in spec_list.specs:
             logging.info(f"Implementing module: {spec.name}")
-            user_prompt = self.prompts.module_implementation.format(specification=spec.model_dump_json())
+            user_prompt = self.prompts.module_implementation.format(specification=spec.model_dump_json(indent=4))
             code_string, signature = self.call_llm_for_module(user_prompt)
             self.pool_manager.add_module(code_string, spec, signature)
         
-        # Show the initialized pool
         logging.info(f"Iteration {iter}: Initialized pool with {len(self.pool_manager.modules)} modules.")
-        logging.info(self.pool_manager.show(view="debug"))
 
     def improve_pool(self, iter: int):
         # Add the best LLM response from previous iteration to messages
@@ -293,7 +295,7 @@ class EurekaPlus:
         
         best_run_id = best_run.response_id
         usage_list = self.pool_manager.get_module_usage_list(iter - 1, best_run_id)
-        self.messages.append({"role": "assistant", "content": usage_list.model_dump_json()})
+        self.messages.append({"role": "assistant", "content": usage_list.model_dump_json(indent=4)})
         
         # Generate improvement plan for the pool
         improve_plan = self.call_llm_and_parse(
@@ -305,11 +307,14 @@ class EurekaPlus:
             ImprovePlan,
         )[0]
         logging.info(f"Iteration {iter}: Improving pool with {len(improve_plan.add_modules)} additions, {len(improve_plan.delete_modules)} deletions, and {len(improve_plan.modify_modules)} modifications.")
-        logging.info(f"Improvement Plan: \n" + improve_plan.model_dump_json())
+        
+        # Save improvement plan as JSON file
+        with open(self.cfg.paths.improvement_file.format(iter=iter), 'w') as file:
+            file.write(improve_plan.model_dump_json(indent=4))
         
         for add_req in improve_plan.add_modules:
             logging.info(f"Adding module: {add_req.spec.name}")
-            user_prompt = self.prompts.module_implementation.format(specification=add_req.spec.model_dump_json())
+            user_prompt = self.prompts.module_implementation.format(specification=add_req.spec.model_dump_json(indent=4))
             code_string, signature = self.call_llm_for_module(user_prompt)
             self.pool_manager.add_module(code_string, add_req.spec, signature)
         for delete_req in improve_plan.delete_modules:
@@ -319,13 +324,12 @@ class EurekaPlus:
             logging.info(f"Modifying module: {modify_req.name}")
             module = self.pool_manager.find_module_by_name(modify_req.name)
             user_prompt = self.prompts.module_modification.format(
-                spec=module.spec.model_dump_json(),
+                spec=module.spec.model_dump_json(indent=4),
                 code=module.code,
                 description=modify_req.description,
             )
             code_string, signature = self.call_llm_for_module(user_prompt)
             self.pool_manager.modify_module(modify_req.name, code_string, signature)
-        logging.info(f"Iteration {iter}: Improved pool: \n" + self.pool_manager.show(view="debug"))
 
     def update_pool(self, phase: Phase, iter: int):
         if phase == Phase.BOOTSTRAP:
@@ -353,9 +357,15 @@ class EurekaPlus:
         function_and_signatures: List[Tuple[str, str]] = []
         for i, module_usage_list in enumerate(module_usage_lists):
             reward_function = self.pool_manager.construct_reward_function(module_usage_list)
-            logging.info(f"Iteration {iter}: Generated reward function {i} from pool:\n" + reward_function + "\n")
             signature, _ = get_function_signature(reward_function, in_class=True)
             function_and_signatures.append((reward_function, signature))
+            # Save module usage list as JSON file
+            with open(self.cfg.paths.module_usage_file.format(iter=iter, id=i), 'w') as file:
+                file.write(module_usage_list.model_dump_json(indent=4))
+        
+        # Save the current pool to file
+        with open(self.cfg.paths.pool_file.format(iter=iter), 'w') as file:
+            file.write(self.pool_manager.show(view="debug"))
 
         # Save messages as JSON file
         with open(self.cfg.paths.message_log, 'w') as file:

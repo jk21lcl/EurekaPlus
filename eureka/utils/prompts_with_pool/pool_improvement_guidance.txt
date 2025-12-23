@@ -13,6 +13,7 @@ You can consider the following types of improvements:
 To constrain the scope of changes, please suggest at most 2 modifications/additions/removals respectively.
 The modification should be small change, such as clipping, scaling, normalizing, or changing temperature parameters.
 When big refactoring is needed, consider adding a new module instead of modifying an existing one.
+The input variables for each module should only include attributes of the provided environment class definition (namely, variables that have prefix self.).
 
 Some helpful tips for analyzing the policy feedback:
 (1) If the success rates are always near zero, then you must rewrite the entire reward function

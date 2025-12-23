@@ -15,8 +15,14 @@ class RunStats:
     signal: Optional[str] = None                # training signal
 
     @classmethod
-    def get_dummy_failure(cls, iteration: int = -1, response_id: int = -1) -> 'RunStats':
-        return cls(iteration=iteration, response_id=response_id, content="")
+    def get_dummy_failure_for_plot(cls, iteration: int = -1, response_id: int = -1) -> 'RunStats':
+        return cls(
+            iteration=iteration,
+            response_id=response_id,
+            content="",
+            success=0.0,
+            reward_correlation=0.0,
+        )
 
 class IterationStats:
     def __init__(self, iteration: int):
@@ -108,7 +114,7 @@ class StatsManager:
             if iter_stats.best_run is not None:
                 best_runs.append(iter_stats.best_run)
             else:
-                best_runs.append(RunStats.get_dummy_failure(iteration=iter_num))
+                best_runs.append(RunStats.get_dummy_failure_for_plot(iteration=iter_num))
         best_successes = [run.success for run in best_runs]
         best_reward_correlations = [run.reward_correlation for run in best_runs]
         best_code_paths = [run.code_path for run in best_runs]
