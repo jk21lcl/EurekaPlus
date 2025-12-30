@@ -3,4 +3,15 @@ Here is the modified module pool, along with the specifications of each module.
 
 You should construct the reward function as a linear combination of the modules in the modified pool.
 Please choose the most appropriate modules and decide their weights to construct the reward function for the given task.
-You can also refer to the training statistics of the previous RL training and the improvement plan to help your decision.
+You can also refer to the training statistics of the previous RL training and the improvement plan to help you find the most promising modules.
+
+Tips for selecting modules:
+Consider including these modules in the final reward function:
+(1) The modules whose reward values changed a lot during training, as they are likely to be more effective for RL optimization.
+(2) The modules that were modified in the improvement plan, as they are expected to better align with the task requirements.
+(3) The newly added modules in the improvement plan, as they may capture important aspects of the task that were previously missing.
+
+Tips for choosing weights:
+(1) The weights should be non-negative, as all modules are designed to provide positive feedback for desirable behaviors.
+(2) The weights should have balanced magnitudes to ensure that no single module dominates the reward signal.
+(3) Consider the relative importance of each module in achieving the task objectives when assigning weights.

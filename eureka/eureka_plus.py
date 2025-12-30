@@ -109,8 +109,6 @@ class EurekaPlus:
         with open(self.cfg.paths.generated_train_config, 'w') as new_yamlfile:
             yaml.safe_dump(data, new_yamlfile)
     
-    
-    
     def call_llm_with_retry(
             self,
             sample: int = 1,
@@ -323,6 +321,9 @@ class EurekaPlus:
         for modify_req in improve_plan.modify_modules:
             logging.info(f"Modifying module: {modify_req.name}")
             module = self.pool_manager.find_module_by_name(modify_req.name)
+            if module is None:
+                logging.info(f"Module {modify_req.name} not found in pool, skipping modification.")
+                continue
             user_prompt = self.prompts.module_modification.format(
                 spec=module.spec.model_dump_json(indent=4),
                 code=module.code,

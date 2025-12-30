@@ -1,6 +1,14 @@
 The Python environment is {task_obs_code_string}.
 The task is {task_description}.
+
 Design some reward modules that will be included in the module pool.
 Just provide the function specifications and a brief description of what each module does.
-Ensure that the modules are diverse and capture different aspects of the task.
+Each module should may named as "<aspect>_reward" for clarity.
+Generate 4 to 6 different reward modules.
+
+Tips for designing modules:
+(1) Consider various reward shaping techniques, such as distance-based rewards, progress-based rewards, and task-specific rewards.
+(2) Consider make use of every relevant state information available in the environment to design informative reward modules.
+(3) Ensure that the modules are diverse and capture different aspects of the task.
+
 The input variables for each module should only include attributes of the provided environment class definition (namely, variables that have prefix self.).

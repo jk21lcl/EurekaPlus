@@ -1,4 +1,10 @@
 Here is the created module pool, along with the specifications of each module.
 {module_pool}
+
 You should construct the reward function as a linear combination of the modules in the pool.
 Please choose the most appropriate modules and decide their weights to construct the reward function for the given task.
+
+Here are some tips for choosing weights:
+(1) The weights should be non-negative, as all modules are designed to provide positive feedback for desirable behaviors.
+(2) The weights should have balanced magnitudes to ensure that no single module dominates the reward signal.
+(3) Consider the relative importance of each module in achieving the task objectives when assigning weights.

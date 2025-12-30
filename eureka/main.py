@@ -26,7 +26,7 @@ def prepare_cfg(cfg: DictConfig):
     task = cfg.env.task
     suffix = cfg.suffix
     env_name = cfg.env.env_name.lower()
-    env_parent = 'isaac' if f'{env_name}.py' in os.listdir(f'{project_root}/envs/isaac') else 'dexterity'
+    env_parent = 'isaac' if f'{env_name}.py' in os.listdir(f'{project_root}/envs/isaac') else 'bidex'
 
     cfg.paths.base_task_file = f'{project_root}/envs/{env_parent}/{env_name}.py'
     cfg.paths.base_task_obs_file = f'{project_root}/envs/{env_parent}/{env_name}_obs.py'
@@ -83,6 +83,7 @@ def evaluate_reward_code(cfg: DictConfig):
                     f'capture_video={cfg.capture_video}',
                     'force_render=False',
                     f'seed={i}',
+                    f'max_iterations={cfg.max_eval_iterations}',
                 ],
                 stdout=f,
                 stderr=f,

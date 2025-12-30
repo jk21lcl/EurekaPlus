@@ -10,4 +10,7 @@ Required changes:
 {description}
 
 Do not change the module specification. Only modify the code as per the required changes.
-The code output should be formatted as a python code string: "```python ... ```".
+Rules for writing the reward module code:
+(1) The module should only contain a single function that computes the reward and returns it as a torch.Tensor. Do not include any helper functions.
+(2) The function name and input variables should match the specification.
+(3) The code output should be formatted as a python code string: "```python ... ```".

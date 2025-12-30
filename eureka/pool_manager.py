@@ -126,14 +126,14 @@ class PoolManager:
         The input argumments should be the union of all module input arguments.
         The output should be a single float reward value, along with a dict of individual module rewards.
         """
-        # Collect all unique inputs
-        input_set = set()
+        # Collect all unique inputs with their types
+        input_args_set = {}
         for usage in usage_list.usages:
             module = self.find_module_by_name(usage.name)
-            if module is None:
-                raise ValueError(f"Module {usage.name} not found in pool.")
-            input_set.update(module.spec.inputs)
-        input_args = ", ".join(sorted(input_set))
+            if module is not None:
+                for arg, arg_type in zip(module.spec.inputs, module.spec.input_types):
+                    input_args_set[arg] = arg_type
+        input_args = ", ".join([f"{arg}: {arg_type}" for arg, arg_type in input_args_set.items()])
 
         # Construct each module function code that will be included
         # TorchScript does not support dynamic imports, so we inline all module codes before the main function
@@ -150,9 +150,13 @@ class PoolManager:
         
         for usage in usage_list.usages:
             module = self.find_module_by_name(usage.name)
+            # Use absolute value of weight to avoid negative weights
+            weight = usage.weight
+            if weight < 0:
+                weight = -weight
             # Prepare the call line
             lines.append(f"    reward_{module.spec.name} = {module.signature}")
-            lines.append(f"    total_reward += {usage.weight} * reward_{module.spec.name}")
+            lines.append(f"    total_reward += {weight} * reward_{module.spec.name}")
         
         # Prepare the reward dict
         # TorchScript does not support dynamic dict construction, so we directly define it here

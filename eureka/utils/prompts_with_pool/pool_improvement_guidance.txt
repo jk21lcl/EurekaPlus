@@ -5,20 +5,21 @@ Based on the training statistics of the RL training, please fix the bugs in the 
 The details of the current module pool are as follows:
 {module_pool_details}
 
-You can consider the following types of improvements:
-1. Modifying existing modules to better align with the task requirements. You should specify which module to modify and provide a natural language description of the required changes without changing the module specification.
-2. Adding new modules to the pool. You should provide a full module specification for the new module without any code implementation.
-3. Removing modules that are not useful for the task.
+You can select from the following types of modifications:
+(1) Modifying existing modules to better align with the task requirements. You should provide a natural language description of the required changes without changing the module specification.
+(2) Adding new modules to the pool. You should provide a full module specification for the new module without implementing the code.
+(3) Removing modules that are redundant or not useful for the task.
+For each modification, please provide a clear natural language explanation of the reasoning behind it, referring to specific training statistics when possible.
+
+Some helpful tips for analyzing the policy feedback:
+(1) If the success rates are always near zero, then you must consider
+    (a) Removing modules that may mislead the agent.
+    (b) Adding new modules that better capture important aspects of the task.
+(2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
+    (a) Changing its scale or the value of its temperature parameter.
+    (b) Removing it from the pool.
+(3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range.
 
 To constrain the scope of changes, please suggest at most 2 modifications/additions/removals respectively.
 The modification should be small change, such as clipping, scaling, normalizing, or changing temperature parameters.
-When big refactoring is needed, consider adding a new module instead of modifying an existing one.
-The input variables for each module should only include attributes of the provided environment class definition (namely, variables that have prefix self.).
-
-Some helpful tips for analyzing the policy feedback:
-(1) If the success rates are always near zero, then you must rewrite the entire reward function
-(2) If the values for a certain reward component are near identical throughout, then this means RL is not able to optimize this component as it is written. You may consider
-    (a) Changing its scale or the value of its temperature parameter
-    (b) Re-writing the reward component 
-    (c) Discarding the reward component
-(3) If some reward components' magnitude is significantly larger, then you must re-scale its value to a proper range
+Most importantly, the input variables for each module should only include attributes of the provided environment class definition (namely, variables that have prefix self.).
